@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: vsb-api              # neutral name — avoid Telegram/anime keywords
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: DB_NAME
+        value: video_seq_bot
+      - key: FILE_STORE_BOT
+        sync: false
+      - key: FILE_STORE_CHANNEL
+        sync: false
+      - key: TMDB_API_KEY
+        sync: false
+      - key: ADMINS
+        sync: false
