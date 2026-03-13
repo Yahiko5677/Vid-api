@@ -1,0 +1,25 @@
+# ── Core ──────────────────────────────────────────────────────
+BOT_TOKEN=your_bot_token_here
+MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net
+DB_NAME=videosequencebot
+
+# ── File Store Bot ────────────────────────────────────────────
+# Username of your existing file store bot (no @)
+FILE_STORE_BOT_USERNAME=YourFileStoreBot
+# The private DB channel ID used by file store bot (negative number)
+FILE_STORE_CHANNEL_ID=-1001234567890
+
+# ── TMDB (for Rich post mode posters/metadata) ────────────────
+TMDB_API_KEY=your_tmdb_api_key_here
+
+# ── Log Channel (optional — set to private channel ID for activity logs) ──────
+LOG_CHANNEL=-1009876543210
+
+# ── Admins (comma-separated Telegram user IDs) ────────────────
+ADMIN_IDS=123456789,987654321
+
+# ── Defaults ──────────────────────────────────────────────────
+# "simple" or "rich"
+DEFAULT_POST_MODE=simple
+# Hours to wait before auto-expiring pending sets (0 = forever)
+PENDING_TIMEOUT_HOURS=0
