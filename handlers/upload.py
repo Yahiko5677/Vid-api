@@ -1,32 +1,19 @@
-"""
-Upload handler — memory-first approach.
-
-Flow:
-1. Admin sends .mkv/.mp4
-2. Parse quality + episode + title from filename
-3. Show confirm card → admin confirms or edits title
-4. Save to memory_store (+ async DB backup)
-5. Log event to log channel
-6. Notify if all qualities ready for that episode
-"""
-
 import re
 import logging
-from pyrogram import Client, filters
-from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram import filters
 from pyrogram.types import Message, CallbackQuery
 
+from bot import Bot
 from config import ADMINS
 from helper_func import parse_quality, parse_episode, parse_title
-from memory_store import save_file, get_episode
+from memory_store import save_file
 from keyboards import confirm_upload, force_post_keyboard
 from services.log import log_file_received, log_file_confirmed
 
-logger = logging.getLogger(__name__)
+logger        = logging.getLogger(__name__)
+_admin_filter = filters.private & filters.user(ADMINS)
 
-_admin_filter = filters.user(ADMINS)
-
-# Confirm state: { admin_id: parsed_data }
+# { admin_id: parsed_data }
 _pending_confirm: dict[int, dict] = {}
 
 
@@ -34,7 +21,8 @@ _pending_confirm: dict[int, dict] = {}
 #  Receive video
 # ─────────────────────────────────────────────────────────────
 
-async def on_video_upload(client: Client, message: Message):
+@Bot.on_message(_admin_filter & (filters.document | filters.video))
+async def on_video_upload(client: Bot, message: Message):
     doc = message.document or message.video
     if not doc:
         return
@@ -44,12 +32,12 @@ async def on_video_upload(client: Client, message: Message):
     if ext not in ("mkv", "mp4", "avi", "mov"):
         return
 
-    admin_id         = message.from_user.id
-    quality          = parse_quality(file_name) or "480p"
-    season, episode  = parse_episode(file_name)
-    season           = season  or 1
-    episode          = episode or 1
-    title            = parse_title(file_name)
+    admin_id        = message.from_user.id
+    quality         = parse_quality(file_name) or "480p"
+    season, episode = parse_episode(file_name)
+    season          = season  or 1
+    episode         = episode or 1
+    title           = parse_title(file_name)
 
     _pending_confirm[admin_id] = {
         "file_id":   doc.file_id,
@@ -63,19 +51,18 @@ async def on_video_upload(client: Client, message: Message):
 
     ep_str = f"S{season:02d}E{episode:02d}"
     await message.reply(
-        f"📁 **File detected**\n\n"
-        f"📌 Title   : `{title}`\n"
-        f"📺 Episode : `{ep_str}`\n"
-        f"🎞 Quality : `{quality}`\n"
-        f"📄 File    : `{file_name}`\n\n"
+        f"📁 <b>File detected</b>\n\n"
+        f"📌 Title   : <code>{title}</code>\n"
+        f"📺 Episode : <code>{ep_str}</code>\n"
+        f"🎞 Quality : <code>{quality}</code>\n"
+        f"📄 File    : <code>{file_name}</code>\n\n"
         f"Is this correct?",
         reply_markup=confirm_upload(title, season, episode, quality),
         quote=True,
     )
 
-    # Log to channel
     from database.db import settings_col
-    s = await settings_col.find_one({"admin_id": admin_id}) or {}
+    s      = await settings_col.find_one({"admin_id": admin_id}) or {}
     log_ch = s.get("log_channel_id")
     await log_file_received(client, admin_id, title, quality, ep_str, log_ch)
 
@@ -84,16 +71,15 @@ async def on_video_upload(client: Client, message: Message):
 #  Confirm
 # ─────────────────────────────────────────────────────────────
 
-async def cb_confirm_upload(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^confirm_upload$") & filters.user(ADMINS))
+async def cb_confirm_upload(client: Bot, cb: CallbackQuery):
     admin_id = cb.from_user.id
     data     = _pending_confirm.get(admin_id)
     if not data:
         return await cb.answer("No pending upload.", show_alert=True)
 
     title_key = re.sub(r'\W+', '_', data["title"].lower()).strip("_")
-
-    # ── Save to memory (+ async DB backup) ───────────────────
-    ep = save_file(
+    ep        = save_file(
         admin_id  = admin_id,
         title     = data["title"],
         title_key = title_key,
@@ -109,22 +95,19 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
     missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
     ep_str  = f"S{data['season']:02d}E{data['episode']:02d}"
 
-    # Log confirmed
     from database.db import settings_col
-    s = await settings_col.find_one({"admin_id": admin_id}) or {}
+    s      = await settings_col.find_one({"admin_id": admin_id}) or {}
     log_ch = s.get("log_channel_id")
     await log_file_confirmed(client, admin_id, data["title"], data["quality"], ep_str, log_ch)
 
     if missing:
         await cb.message.edit_text(
-            f"✅ **Saved to memory!** `{data['title']} {ep_str} {data['quality']}`\n\n"
-            f"⏳ Still waiting for: `{', '.join(missing)}`\n"
-            f"Use /pending to see all."
+            f"✅ <b>Saved!</b> <code>{data['title']} {ep_str} {data['quality']}</code>\n\n"
+            f"⏳ Still waiting for: <code>{', '.join(missing)}</code>",
         )
     else:
         await cb.message.edit_text(
-            f"✅ **All qualities ready!** `{data['title']} {ep_str}`\n\n"
-            f"Ready to post whenever:",
+            f"✅ <b>All qualities ready!</b> <code>{data['title']} {ep_str}</code>\n\nReady to post:",
             reply_markup=force_post_keyboard(title_key, data["season"]),
         )
 
@@ -136,27 +119,25 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
 #  Edit title
 # ─────────────────────────────────────────────────────────────
 
-async def cb_edit_title(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^edit_title$") & filters.user(ADMINS))
+async def cb_edit_title(client: Bot, cb: CallbackQuery):
     if cb.from_user.id not in _pending_confirm:
         return await cb.answer("No pending upload.", show_alert=True)
-    await cb.message.edit_text("✏️ Send the **corrected title** now:")
+    await cb.message.edit_text("✏️ Send the <b>corrected title</b> now:")
     await cb.answer()
 
 
-async def on_title_edit_reply(client: Client, message: Message):
+@Bot.on_message(filters.text & _admin_filter, group=1)
+async def on_title_edit_reply(client: Bot, message: Message):
     admin_id = message.from_user.id
     if admin_id not in _pending_confirm:
         return
-    data = _pending_confirm[admin_id]
-    # Only intercept if we're in title-edit mode
-    # (settings.py text handler runs at group=2, this at group=1)
+    data          = _pending_confirm[admin_id]
     data["title"] = message.text.strip()
-    ep_str = f"S{data['season']:02d}E{data['episode']:02d}"
+    ep_str        = f"S{data['season']:02d}E{data['episode']:02d}"
     await message.reply(
         f"✅ Title updated!\n\n"
-        f"📌 Title   : `{data['title']}`\n"
-        f"📺 Episode : `{ep_str}`\n"
-        f"🎞 Quality : `{data['quality']}`\n\nConfirm?",
+        f"📌 <code>{data['title']}</code> · <code>{ep_str}</code> · <code>{data['quality']}</code>\n\nConfirm?",
         reply_markup=confirm_upload(data["title"], data["season"], data["episode"], data["quality"]),
     )
 
@@ -165,25 +146,8 @@ async def on_title_edit_reply(client: Client, message: Message):
 #  Discard
 # ─────────────────────────────────────────────────────────────
 
-async def cb_discard_upload(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^discard_upload$") & filters.user(ADMINS))
+async def cb_discard_upload(client: Bot, cb: CallbackQuery):
     _pending_confirm.pop(cb.from_user.id, None)
     await cb.message.edit_text("🗑 Discarded.")
     await cb.answer()
-
-
-# ─────────────────────────────────────────────────────────────
-#  Register
-# ─────────────────────────────────────────────────────────────
-
-def register(app: Client):
-    app.add_handler(MessageHandler(
-        on_video_upload,
-        filters.private & _admin_filter & (filters.document | filters.video),
-    ))
-    app.add_handler(CallbackQueryHandler(cb_confirm_upload, filters.regex("^confirm_upload$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_edit_title,     filters.regex("^edit_title$")     & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_discard_upload, filters.regex("^discard_upload$") & _admin_filter))
-    app.add_handler(MessageHandler(
-        on_title_edit_reply,
-        filters.private & _admin_filter & filters.text,
-    ), group=1)
