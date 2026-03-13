@@ -338,3 +338,9 @@ async def cb_cancel_post(client: Bot, cb: CallbackQuery):
 async def cb_close(client: Bot, cb: CallbackQuery):
     await cb.message.delete()
     await cb.answer()
+
+
+
+@Bot.on_message(filters.private)
+async def debug(client, message):
+    print("UPDATE RECEIVED:", message.text)
