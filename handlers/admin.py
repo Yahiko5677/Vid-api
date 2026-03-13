@@ -3,7 +3,7 @@ from pyrogram import filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-from bot import Bot
+from pyrogram import Client
 from config import ADMINS
 from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending
 from database.db import get_settings, mark_posted, pending_col
@@ -24,8 +24,8 @@ _post_session: dict[int, dict] = {}
 #  /start
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(filters.command("start") & _admin_filter)
-async def cmd_start(client: Bot, message: Message):
+@Client.on_message(filters.command("start") & _admin_filter)
+async def cmd_start(client: Client, message: Message):
     await message.reply(
         "👋 <b>VideoSequenceBot</b>\n\n"
         "Send <code>.mkv</code> or <code>.mp4</code> files — I'll group them by episode and post to your channels.\n\n"
@@ -44,8 +44,8 @@ async def cmd_start(client: Bot, message: Message):
 #  /pending
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(filters.command("pending") & _admin_filter)
-async def cmd_pending(client: Bot, message: Message):
+@Client.on_message(filters.command("pending") & _admin_filter)
+async def cmd_pending(client: Client, message: Message):
     admin_id = message.from_user.id
     docs     = get_all_pending(admin_id)
 
@@ -87,8 +87,8 @@ async def cmd_pending(client: Bot, message: Message):
 #  /log
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(filters.command("log") & _admin_filter)
-async def cmd_log(client: Bot, message: Message):
+@Client.on_message(filters.command("log") & _admin_filter)
+async def cmd_log(client: Client, message: Message):
     await send_log_summary(client, message, message.from_user.id)
 
 
@@ -96,8 +96,8 @@ async def cmd_log(client: Bot, message: Message):
 #  /stats
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(filters.command("stats") & _admin_filter)
-async def cmd_stats(client: Bot, message: Message):
+@Client.on_message(filters.command("stats") & _admin_filter)
+async def cmd_stats(client: Client, message: Message):
     admin_id = message.from_user.id
     pending  = count_pending(admin_id)
     posted   = await pending_col.count_documents({"admin_id": admin_id, "status": "posted"})
@@ -113,8 +113,8 @@ async def cmd_stats(client: Bot, message: Message):
 #  /cancel
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(filters.command("cancel") & _admin_filter)
-async def cmd_cancel(client: Bot, message: Message):
+@Client.on_message(filters.command("cancel") & _admin_filter)
+async def cmd_cancel(client: Client, message: Message):
     _post_session.pop(message.from_user.id, None)
     await message.reply("❌ Action cancelled.")
 
@@ -123,8 +123,8 @@ async def cmd_cancel(client: Bot, message: Message):
 #  Force post
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex(r"^force_post_") & filters.user(ADMINS))
-async def cb_force_post(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex(r"^force_post_") & filters.user(ADMINS))
+async def cb_force_post(client: Client, cb: CallbackQuery):
     parts     = cb.data.split("_")
     season    = int(parts[-1])
     title_key = "_".join(parts[2:-1])
@@ -180,8 +180,8 @@ async def cb_force_post(client: Bot, cb: CallbackQuery):
 #  Channel picker
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex(r"^pick_ch_") & filters.user(ADMINS))
-async def cb_pick_channel(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex(r"^pick_ch_") & filters.user(ADMINS))
+async def cb_pick_channel(client: Client, cb: CallbackQuery):
     admin_id = cb.from_user.id
     ch_id    = int(cb.data.split("_")[-1])
     session  = _post_session.get(admin_id, {})
@@ -198,8 +198,8 @@ async def cb_pick_channel(client: Bot, cb: CallbackQuery):
     await cb.answer()
 
 
-@Bot.on_callback_query(filters.regex("^confirm_channels$") & filters.user(ADMINS))
-async def cb_confirm_channels(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^confirm_channels$") & filters.user(ADMINS))
+async def cb_confirm_channels(client: Client, cb: CallbackQuery):
     admin_id = cb.from_user.id
     session  = _post_session.get(admin_id, {})
     selected = session.get("channels_selected", [])
@@ -226,8 +226,8 @@ async def cb_confirm_channels(client: Bot, cb: CallbackQuery):
 #  Inline audio/subs edit
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^edit_audio$") & filters.user(ADMINS))
-async def cb_edit_audio(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^edit_audio$") & filters.user(ADMINS))
+async def cb_edit_audio(client: Client, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "audio"
@@ -235,8 +235,8 @@ async def cb_edit_audio(client: Bot, cb: CallbackQuery):
     await cb.answer()
 
 
-@Bot.on_callback_query(filters.regex("^edit_subs$") & filters.user(ADMINS))
-async def cb_edit_subs(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^edit_subs$") & filters.user(ADMINS))
+async def cb_edit_subs(client: Client, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "subs"
@@ -244,8 +244,8 @@ async def cb_edit_subs(client: Bot, cb: CallbackQuery):
     await cb.answer()
 
 
-@Bot.on_message(filters.text & _admin_filter, group=3)
-async def on_inline_edit_text(client: Bot, message: Message):
+@Client.on_message(filters.text & _admin_filter, group=3)
+async def on_inline_edit_text(client: Client, message: Message):
     admin_id = message.from_user.id
     session  = _post_session.get(admin_id, {})
     editing  = session.get("editing")
@@ -274,8 +274,8 @@ async def on_inline_edit_text(client: Bot, message: Message):
 #  DO POST
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^do_post$") & filters.user(ADMINS))
-async def cb_do_post(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^do_post$") & filters.user(ADMINS))
+async def cb_do_post(client: Client, cb: CallbackQuery):
     admin_id = cb.from_user.id
     session  = _post_session.get(admin_id)
     if not session:
@@ -327,20 +327,14 @@ async def cb_do_post(client: Bot, cb: CallbackQuery):
 #  Cancel / Close
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^cancel_post$") & filters.user(ADMINS))
-async def cb_cancel_post(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^cancel_post$") & filters.user(ADMINS))
+async def cb_cancel_post(client: Client, cb: CallbackQuery):
     _post_session.pop(cb.from_user.id, None)
     await cb.message.edit_text("❌ Cancelled.")
     await cb.answer()
 
 
-@Bot.on_callback_query(filters.regex("^close$") & filters.user(ADMINS))
-async def cb_close(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^close$") & filters.user(ADMINS))
+async def cb_close(client: Client, cb: CallbackQuery):
     await cb.message.delete()
     await cb.answer()
-
-
-
-@Bot.on_message(filters.private)
-async def debug(client, message):
-    print("UPDATE RECEIVED:", message.text)
