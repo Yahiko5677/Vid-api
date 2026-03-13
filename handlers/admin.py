@@ -1,23 +1,12 @@
-"""
-Admin handler.
-
-Commands:
-  /start    — welcome
-  /pending  — list all pending episodes (from memory)
-  /log      — show recent log events
-  /stats    — quick stats
-  /cancel   — cancel current action
-"""
-
 import logging
-from pyrogram import Client, filters
-from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram import filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
+from bot import Bot
 from config import ADMINS
 from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending
-from database.db import get_settings, mark_posted
+from database.db import get_settings, mark_posted, pending_col
 from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button
 from services.post import dispatch_post
 from services.metadata import fetch_metadata
@@ -26,10 +15,8 @@ from services.log import (
     log_post_success, log_post_failed,
 )
 
-logger       = logging.getLogger(__name__)
-_admin_filter = filters.user(ADMINS)
-
-# Post sessions { admin_id: { title_key, season, episodes, meta, channels_selected, audio_override, subs_override } }
+logger        = logging.getLogger(__name__)
+_admin_filter = filters.private & filters.user(ADMINS)
 _post_session: dict[int, dict] = {}
 
 
@@ -37,7 +24,8 @@ _post_session: dict[int, dict] = {}
 #  /start
 # ─────────────────────────────────────────────────────────────
 
-async def cmd_start(client: Client, message: Message):
+@Bot.on_message(filters.command("start") & _admin_filter)
+async def cmd_start(client: Bot, message: Message):
     await message.reply(
         "👋 <b>VideoSequenceBot</b>\n\n"
         "Send <code>.mkv</code> or <code>.mp4</code> files — I'll group them by episode and post to your channels.\n\n"
@@ -56,14 +44,14 @@ async def cmd_start(client: Client, message: Message):
 #  /pending
 # ─────────────────────────────────────────────────────────────
 
-async def cmd_pending(client: Client, message: Message):
+@Bot.on_message(filters.command("pending") & _admin_filter)
+async def cmd_pending(client: Bot, message: Message):
     admin_id = message.from_user.id
-    docs     = get_all_pending(admin_id)   # from memory
+    docs     = get_all_pending(admin_id)
 
     if not docs:
         return await message.reply("✅ No pending episodes in memory.")
 
-    # Group by title + season
     groups: dict[str, list] = {}
     for doc in docs:
         key = f"{doc['title_key']}__S{doc['season']:02d}"
@@ -78,10 +66,9 @@ async def cmd_pending(client: Client, message: Message):
         lines.append(f"• <b>{title}</b> S{season:02d}")
         for ep in sorted(eps, key=lambda x: x["episode"]):
             q_have   = list(ep.get("qualities", {}).keys())
-            q_miss   = [q for q in ["480p","720p","1080p"] if q not in q_have]
+            q_miss   = [q for q in ["480p", "720p", "1080p"] if q not in q_have]
             miss_str = f" ⚠️ Missing: {', '.join(q_miss)}" if q_miss else " ✅ Ready"
             lines.append(f"  └ E{ep['episode']:02d}{miss_str}")
-
         tk = eps[0]["title_key"]
         buttons.append([InlineKeyboardButton(
             f"🚀 Post {title} S{season:02d}",
@@ -100,7 +87,8 @@ async def cmd_pending(client: Client, message: Message):
 #  /log
 # ─────────────────────────────────────────────────────────────
 
-async def cmd_log(client: Client, message: Message):
+@Bot.on_message(filters.command("log") & _admin_filter)
+async def cmd_log(client: Bot, message: Message):
     await send_log_summary(client, message, message.from_user.id)
 
 
@@ -108,14 +96,11 @@ async def cmd_log(client: Client, message: Message):
 #  /stats
 # ─────────────────────────────────────────────────────────────
 
-async def cmd_stats(client: Client, message: Message):
+@Bot.on_message(filters.command("stats") & _admin_filter)
+async def cmd_stats(client: Bot, message: Message):
     admin_id = message.from_user.id
     pending  = count_pending(admin_id)
-
-    # Posted count from DB
-    from database.db import pending_col
-    posted = await pending_col.count_documents({"admin_id": admin_id, "status": "posted"})
-
+    posted   = await pending_col.count_documents({"admin_id": admin_id, "status": "posted"})
     await message.reply(
         f"📊 <b>Your Stats</b>\n\n"
         f"🧠 In memory (pending) : <code>{pending}</code>\n"
@@ -125,17 +110,26 @@ async def cmd_stats(client: Client, message: Message):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Force post callback
+#  /cancel
 # ─────────────────────────────────────────────────────────────
 
-async def cb_force_post(client: Client, cb: CallbackQuery):
-    # format: force_post_{title_key}_{season}
+@Bot.on_message(filters.command("cancel") & _admin_filter)
+async def cmd_cancel(client: Bot, message: Message):
+    _post_session.pop(message.from_user.id, None)
+    await message.reply("❌ Action cancelled.")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Force post
+# ─────────────────────────────────────────────────────────────
+
+@Bot.on_callback_query(filters.regex(r"^force_post_") & filters.user(ADMINS))
+async def cb_force_post(client: Bot, cb: CallbackQuery):
     parts     = cb.data.split("_")
     season    = int(parts[-1])
     title_key = "_".join(parts[2:-1])
-
-    admin_id = cb.from_user.id
-    episodes = get_season_episodes(admin_id, title_key, season)   # from memory
+    admin_id  = cb.from_user.id
+    episodes  = get_season_episodes(admin_id, title_key, season)
 
     if not episodes:
         return await cb.answer("No episodes found in memory.", show_alert=True)
@@ -143,7 +137,6 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
     title    = episodes[0]["title"]
     settings = await get_settings(admin_id)
 
-    # Fetch metadata for rich mode
     meta = None
     if settings.get("post_mode") == "rich":
         meta = await fetch_metadata(title)
@@ -170,15 +163,13 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         subs  = settings.get("sub_info", "English")
         await cb.message.edit_text(
             f"📢 Posting to: <b>{channels[0]['name']}</b>\n\n"
-            f"🔊 Audio: <code>{audio}</code>\n"
-            f"📝 Subs: <code>{subs}</code>\n\n"
-            f"Confirm post?",
+            f"🔊 Audio: <code>{audio}</code>\n📝 Subs: <code>{subs}</code>\n\nConfirm post?",
             parse_mode=ParseMode.HTML,
             reply_markup=post_confirm(audio, subs),
         )
     else:
         await cb.message.edit_text(
-            f"📢 Select channel(s) to post <b>{title} S{season:02d}</b>:",
+            f"📢 Select channel(s) for <b>{title} S{season:02d}</b>:",
             parse_mode=ParseMode.HTML,
             reply_markup=channel_picker(channels, []),
         )
@@ -189,7 +180,8 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
 #  Channel picker
 # ─────────────────────────────────────────────────────────────
 
-async def cb_pick_channel(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex(r"^pick_ch_") & filters.user(ADMINS))
+async def cb_pick_channel(client: Bot, cb: CallbackQuery):
     admin_id = cb.from_user.id
     ch_id    = int(cb.data.split("_")[-1])
     session  = _post_session.get(admin_id, {})
@@ -206,7 +198,8 @@ async def cb_pick_channel(client: Client, cb: CallbackQuery):
     await cb.answer()
 
 
-async def cb_confirm_channels(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^confirm_channels$") & filters.user(ADMINS))
+async def cb_confirm_channels(client: Bot, cb: CallbackQuery):
     admin_id = cb.from_user.id
     session  = _post_session.get(admin_id, {})
     selected = session.get("channels_selected", [])
@@ -222,9 +215,7 @@ async def cb_confirm_channels(client: Client, cb: CallbackQuery):
 
     await cb.message.edit_text(
         f"📢 Posting to: <b>{', '.join(names)}</b>\n\n"
-        f"🔊 Audio: <code>{audio}</code>\n"
-        f"📝 Subs: <code>{subs}</code>\n\n"
-        f"Confirm post?",
+        f"🔊 Audio: <code>{audio}</code>\n📝 Subs: <code>{subs}</code>\n\nConfirm post?",
         parse_mode=ParseMode.HTML,
         reply_markup=post_confirm(audio, subs),
     )
@@ -232,26 +223,29 @@ async def cb_confirm_channels(client: Client, cb: CallbackQuery):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Inline audio/subs edit at confirm step
+#  Inline audio/subs edit
 # ─────────────────────────────────────────────────────────────
 
-async def cb_edit_audio_inline(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^edit_audio$") & filters.user(ADMINS))
+async def cb_edit_audio(client: Bot, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "audio"
-    await cb.message.edit_text("🔊 Send the new audio info for this post:", reply_markup=close_button())
+    await cb.message.edit_text("🔊 Send the new audio info:", reply_markup=close_button())
     await cb.answer()
 
 
-async def cb_edit_subs_inline(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^edit_subs$") & filters.user(ADMINS))
+async def cb_edit_subs(client: Bot, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "subs"
-    await cb.message.edit_text("📝 Send the new subtitle info for this post:", reply_markup=close_button())
+    await cb.message.edit_text("📝 Send the new subtitle info:", reply_markup=close_button())
     await cb.answer()
 
 
-async def on_inline_edit_text(client: Client, message: Message):
+@Bot.on_message(filters.text & _admin_filter, group=3)
+async def on_inline_edit_text(client: Bot, message: Message):
     admin_id = message.from_user.id
     session  = _post_session.get(admin_id, {})
     editing  = session.get("editing")
@@ -270,7 +264,7 @@ async def on_inline_edit_text(client: Client, message: Message):
 
     session.pop("editing", None)
     await message.reply(
-        f"✅ Updated!\n\n🔊 Audio: <code>{audio}</code>\n📝 Subs: <code>{subs}</code>\n\nConfirm post?",
+        f"✅ Updated!\n\n🔊 <code>{audio}</code> | 📝 <code>{subs}</code>\n\nConfirm post?",
         parse_mode=ParseMode.HTML,
         reply_markup=post_confirm(audio, subs),
     )
@@ -280,59 +274,44 @@ async def on_inline_edit_text(client: Client, message: Message):
 #  DO POST
 # ─────────────────────────────────────────────────────────────
 
-async def cb_do_post(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^do_post$") & filters.user(ADMINS))
+async def cb_do_post(client: Bot, cb: CallbackQuery):
     admin_id = cb.from_user.id
     session  = _post_session.get(admin_id)
     if not session:
         return await cb.answer("No active post session.", show_alert=True)
 
-    settings   = await get_settings(admin_id)
-    ch_ids     = session["channels_selected"]
-    episodes   = session["episodes"]
-    meta       = session.get("meta")
-    title      = episodes[0]["title"]
-    season     = episodes[0]["season"]
-    mode       = settings.get("post_mode", "simple")
+    settings     = await get_settings(admin_id)
+    ch_ids       = session["channels_selected"]
+    episodes     = session["episodes"]
+    meta         = session.get("meta")
+    title        = episodes[0]["title"]
+    season       = episodes[0]["season"]
+    mode         = settings.get("post_mode", "simple")
+    all_channels = settings.get("channels", [])
+    ch_names     = [c["name"] for c in all_channels if c["id"] in ch_ids]
+    log_ch       = settings.get("log_channel_id")
 
-    # Apply inline overrides
     if session.get("audio_override"):
         settings["audio_info"] = session["audio_override"]
     if session.get("subs_override"):
         settings["sub_info"] = session["subs_override"]
 
-    # Channel names for log
-    all_channels = settings.get("channels", [])
-    ch_names     = [c["name"] for c in all_channels if c["id"] in ch_ids]
-
-    # Log channel
-    log_ch = settings.get("log_channel_id")
-
     await cb.message.edit_text("⏳ Posting...")
-
-    # Log: triggered
     await log_post_triggered(client, admin_id, title, season, len(episodes), ch_names, log_ch)
 
     try:
-        await dispatch_post(
-            client      = client,
-            channel_ids = ch_ids,
-            episodes    = episodes,
-            settings    = settings,
-            meta        = meta,
-        )
+        await dispatch_post(client=client, channel_ids=ch_ids, episodes=episodes, settings=settings, meta=meta)
 
-        # Remove from memory + DB backup
         for ep in episodes:
             remove_episode(admin_id, ep["title_key"], ep["season"], ep["episode"])
             await mark_posted(admin_id, ep["title_key"], ep["season"], ep["episode"])
 
         await cb.message.edit_text(
-            f"✅ <b>Posted!</b>\n\n"
-            f"📺 {title} S{season:02d}\n"
-            f"📊 {len(episodes)} episode(s) → {len(ch_ids)} channel(s)",
+            f"✅ <b>Posted!</b>\n\n📺 {title} S{season:02d}\n"
+            f"📊 {len(episodes)} ep(s) → {len(ch_ids)} channel(s)",
             parse_mode=ParseMode.HTML,
         )
-
         await log_post_success(client, admin_id, title, season, len(episodes), ch_names, mode, log_ch)
 
     except Exception as e:
@@ -345,40 +324,17 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Cancel
+#  Cancel / Close
 # ─────────────────────────────────────────────────────────────
 
-async def cb_cancel_post(client: Client, cb: CallbackQuery):
+@Bot.on_callback_query(filters.regex("^cancel_post$") & filters.user(ADMINS))
+async def cb_cancel_post(client: Bot, cb: CallbackQuery):
     _post_session.pop(cb.from_user.id, None)
     await cb.message.edit_text("❌ Cancelled.")
     await cb.answer()
 
 
-async def cmd_cancel(client: Client, message: Message):
-    _post_session.pop(message.from_user.id, None)
-    await message.reply("❌ Action cancelled.")
-
-
-# ─────────────────────────────────────────────────────────────
-#  Register
-# ─────────────────────────────────────────────────────────────
-
-def register(app: Client):
-    app.add_handler(MessageHandler(cmd_start,   filters.command("start")   & filters.private & _admin_filter))
-    app.add_handler(MessageHandler(cmd_pending, filters.command("pending") & filters.private & _admin_filter))
-    app.add_handler(MessageHandler(cmd_log,     filters.command("log")     & filters.private & _admin_filter))
-    app.add_handler(MessageHandler(cmd_stats,   filters.command("stats")   & filters.private & _admin_filter))
-    app.add_handler(MessageHandler(cmd_cancel,  filters.command("cancel")  & filters.private & _admin_filter))
-    app.add_handler(MessageHandler(on_inline_edit_text, filters.private & _admin_filter & filters.text), group=3)
-
-    app.add_handler(CallbackQueryHandler(cb_force_post,        filters.regex(r"^force_post_") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_pick_channel,      filters.regex(r"^pick_ch_") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_confirm_channels,  filters.regex("^confirm_channels$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_do_post,           filters.regex("^do_post$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_cancel_post,       filters.regex("^cancel_post$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_edit_audio_inline, filters.regex("^edit_audio$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(cb_edit_subs_inline,  filters.regex("^edit_subs$") & _admin_filter))
-    app.add_handler(CallbackQueryHandler(
-        lambda c, cb: cb.message.delete() or cb.answer(),
-        filters.regex("^close$") & _admin_filter,
-    ))
+@Bot.on_callback_query(filters.regex("^close$") & filters.user(ADMINS))
+async def cb_close(client: Bot, cb: CallbackQuery):
+    await cb.message.delete()
+    await cb.answer()
