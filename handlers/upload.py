@@ -3,7 +3,7 @@ import logging
 from pyrogram import filters
 from pyrogram.types import Message, CallbackQuery
 
-from bot import Bot
+from pyrogram import Client
 from config import ADMINS
 from helper_func import parse_quality, parse_episode, parse_title
 from memory_store import save_file
@@ -21,8 +21,8 @@ _pending_confirm: dict[int, dict] = {}
 #  Receive video
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_message(_admin_filter & (filters.document | filters.video))
-async def on_video_upload(client: Bot, message: Message):
+@Client.on_message(_admin_filter & (filters.document | filters.video))
+async def on_video_upload(client: Client, message: Message):
     doc = message.document or message.video
     if not doc:
         return
@@ -71,8 +71,8 @@ async def on_video_upload(client: Bot, message: Message):
 #  Confirm
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^confirm_upload$") & filters.user(ADMINS))
-async def cb_confirm_upload(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^confirm_upload$") & filters.user(ADMINS))
+async def cb_confirm_upload(client: Client, cb: CallbackQuery):
     admin_id = cb.from_user.id
     data     = _pending_confirm.get(admin_id)
     if not data:
@@ -119,16 +119,16 @@ async def cb_confirm_upload(client: Bot, cb: CallbackQuery):
 #  Edit title
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^edit_title$") & filters.user(ADMINS))
-async def cb_edit_title(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^edit_title$") & filters.user(ADMINS))
+async def cb_edit_title(client: Client, cb: CallbackQuery):
     if cb.from_user.id not in _pending_confirm:
         return await cb.answer("No pending upload.", show_alert=True)
     await cb.message.edit_text("✏️ Send the <b>corrected title</b> now:")
     await cb.answer()
 
 
-@Bot.on_message(filters.text & _admin_filter, group=1)
-async def on_title_edit_reply(client: Bot, message: Message):
+@Client.on_message(filters.text & _admin_filter, group=1)
+async def on_title_edit_reply(client: Client, message: Message):
     admin_id = message.from_user.id
     if admin_id not in _pending_confirm:
         return
@@ -146,8 +146,8 @@ async def on_title_edit_reply(client: Bot, message: Message):
 #  Discard
 # ─────────────────────────────────────────────────────────────
 
-@Bot.on_callback_query(filters.regex("^discard_upload$") & filters.user(ADMINS))
-async def cb_discard_upload(client: Bot, cb: CallbackQuery):
+@Client.on_callback_query(filters.regex("^discard_upload$") & filters.user(ADMINS))
+async def cb_discard_upload(client: Client, cb: CallbackQuery):
     _pending_confirm.pop(cb.from_user.id, None)
     await cb.message.edit_text("🗑 Discarded.")
     await cb.answer()
