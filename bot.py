@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aiohttp import web
 from pyrogram import Client
 from config import API_ID, API_HASH, BOT_TOKEN, PORT
