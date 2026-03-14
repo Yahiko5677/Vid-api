@@ -123,6 +123,12 @@ async def cb_add_channel(client: Client, cb: CallbackQuery):
     await cb.answer()
 
 
+@Client.on_callback_query(filters.regex(r"^ch_info_-?\d+$") & filters.user(ADMINS))
+async def cb_ch_info(client: Client, cb: CallbackQuery):
+    # Channel name button — just answer silently, no action
+    await cb.answer()
+
+
 @Client.on_callback_query(filters.regex(r"^remove_ch_-?\d+$") & filters.user(ADMINS))
 async def cb_remove_channel(client: Client, cb: CallbackQuery):
     ch_id    = int(cb.data.split("_")[-1])
