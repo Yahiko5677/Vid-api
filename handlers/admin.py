@@ -5,6 +5,7 @@ from pyrogram.enums import ParseMode
 
 from pyrogram import Client
 from config import ADMINS
+from utils import pacing
 from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending
 from database.db import get_settings, mark_posted, pending_col
 from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button
@@ -26,7 +27,7 @@ _post_session: dict[int, dict] = {}
 
 @Client.on_message(filters.command("start") & _admin_filter)
 async def cmd_start(client: Client, message: Message):
-    await message.reply(
+    await pacing.reply(message, 
         "👋 <b>VideoSequenceBot</b>\n\n"
         "Send <code>.mkv</code> or <code>.mp4</code> files — I'll group them by episode and post to your channels.\n\n"
         "<b>Commands:</b>\n"
@@ -50,7 +51,7 @@ async def cmd_pending(client: Client, message: Message):
     docs     = get_all_pending(admin_id)
 
     if not docs:
-        return await message.reply("✅ No pending episodes in memory.")
+        return await pacing.reply(message, "✅ No pending episodes in memory.")
 
     groups: dict[str, list] = {}
     for doc in docs:
@@ -76,7 +77,7 @@ async def cmd_pending(client: Client, message: Message):
         )])
 
     buttons.append([InlineKeyboardButton("❌ Close", callback_data="close")])
-    await message.reply(
+    await pacing.reply(message, 
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -101,7 +102,7 @@ async def cmd_stats(client: Client, message: Message):
     admin_id = message.from_user.id
     pending  = count_pending(admin_id)
     posted   = await pending_col.count_documents({"admin_id": admin_id, "status": "posted"})
-    await message.reply(
+    await pacing.reply(message, 
         f"📊 <b>Your Stats</b>\n\n"
         f"🧠 In memory (pending) : <code>{pending}</code>\n"
         f"✅ Posted (all time)   : <code>{posted}</code>",
@@ -116,7 +117,7 @@ async def cmd_stats(client: Client, message: Message):
 @Client.on_message(filters.command("cancel") & _admin_filter)
 async def cmd_cancel(client: Client, message: Message):
     _post_session.pop(message.from_user.id, None)
-    await message.reply("❌ Action cancelled.")
+    await pacing.reply(message, "❌ Action cancelled.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
 
     channels = settings.get("channels", [])
     if not channels:
-        return await cb.message.edit_text(
+        return await pacing.edit(cb.message, 
             "❌ No channels configured. Use /settings to add channels first."
         )
 
@@ -161,14 +162,14 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         _post_session[admin_id]["channels_selected"] = [channels[0]["id"]]
         audio = settings.get("audio_info", "Hindi + English")
         subs  = settings.get("sub_info", "English")
-        await cb.message.edit_text(
+        await pacing.edit(cb.message, 
             f"📢 Posting to: <b>{channels[0]['name']}</b>\n\n"
             f"🔊 Audio: <code>{audio}</code>\n📝 Subs: <code>{subs}</code>\n\nConfirm post?",
             parse_mode=ParseMode.HTML,
             reply_markup=post_confirm(audio, subs),
         )
     else:
-        await cb.message.edit_text(
+        await pacing.edit(cb.message, 
             f"📢 Select channel(s) for <b>{title} S{season:02d}</b>:",
             parse_mode=ParseMode.HTML,
             reply_markup=channel_picker(channels, []),
@@ -194,7 +195,7 @@ async def cb_pick_channel(client: Client, cb: CallbackQuery):
 
     session["channels_selected"] = selected
     settings = await get_settings(admin_id)
-    await cb.message.edit_reply_markup(channel_picker(settings.get("channels", []), selected))
+    await pacing.edit_markup(cb.message, channel_picker(settings.get("channels", []), selected))
     await cb.answer()
 
 
@@ -213,7 +214,7 @@ async def cb_confirm_channels(client: Client, cb: CallbackQuery):
     all_channels = settings.get("channels", [])
     names        = [c["name"] for c in all_channels if c["id"] in selected]
 
-    await cb.message.edit_text(
+    await pacing.edit(cb.message, 
         f"📢 Posting to: <b>{', '.join(names)}</b>\n\n"
         f"🔊 Audio: <code>{audio}</code>\n📝 Subs: <code>{subs}</code>\n\nConfirm post?",
         parse_mode=ParseMode.HTML,
@@ -231,7 +232,7 @@ async def cb_edit_audio(client: Client, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "audio"
-    await cb.message.edit_text("🔊 Send the new audio info:", reply_markup=close_button())
+    await pacing.edit(cb.message, "🔊 Send the new audio info:", reply_markup=close_button())
     await cb.answer()
 
 
@@ -240,7 +241,7 @@ async def cb_edit_subs(client: Client, cb: CallbackQuery):
     if cb.from_user.id not in _post_session:
         return await cb.answer("No active session.", show_alert=True)
     _post_session[cb.from_user.id]["editing"] = "subs"
-    await cb.message.edit_text("📝 Send the new subtitle info:", reply_markup=close_button())
+    await pacing.edit(cb.message, "📝 Send the new subtitle info:", reply_markup=close_button())
     await cb.answer()
 
 
@@ -263,7 +264,7 @@ async def on_inline_edit_text(client: Client, message: Message):
         audio = session.get("audio_override") or settings.get("audio_info", "Hindi + English")
 
     session.pop("editing", None)
-    await message.reply(
+    await pacing.reply(message, 
         f"✅ Updated!\n\n🔊 <code>{audio}</code> | 📝 <code>{subs}</code>\n\nConfirm post?",
         parse_mode=ParseMode.HTML,
         reply_markup=post_confirm(audio, subs),
@@ -297,7 +298,7 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
     if session.get("subs_override"):
         settings["sub_info"] = session["subs_override"]
 
-    await cb.message.edit_text("⏳ Posting...")
+    await pacing.edit(cb.message, "⏳ Posting...")
     await log_post_triggered(client, admin_id, title, season, len(episodes), ch_names, log_ch)
 
     try:
@@ -307,7 +308,11 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
             remove_episode(admin_id, ep["title_key"], ep["season"], ep["episode"])
             await mark_posted(admin_id, ep["title_key"], ep["season"], ep["episode"])
 
-        await cb.message.edit_text(
+        # Clear title cache after posting so next batch asks for confirm again
+        from handlers.upload import clear_title_cache
+        clear_title_cache(admin_id, session["title_key"])
+
+        await pacing.edit(cb.message, 
             f"✅ <b>Posted!</b>\n\n📺 {title} S{season:02d}\n"
             f"📊 {len(episodes)} ep(s) → {len(ch_ids)} channel(s)",
             parse_mode=ParseMode.HTML,
@@ -316,7 +321,7 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
 
     except Exception as e:
         logger.error(f"Post failed: {e}")
-        await cb.message.edit_text(f"❌ Post failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        await pacing.edit(cb.message, f"❌ Post failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
         await log_post_failed(client, admin_id, title, str(e), log_ch)
 
     _post_session.pop(admin_id, None)
@@ -330,7 +335,7 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
 @Client.on_callback_query(filters.regex("^cancel_post$") & filters.user(ADMINS))
 async def cb_cancel_post(client: Client, cb: CallbackQuery):
     _post_session.pop(cb.from_user.id, None)
-    await cb.message.edit_text("❌ Cancelled.")
+    await pacing.edit(cb.message, "❌ Cancelled.")
     await cb.answer()
 
 
