@@ -6,7 +6,8 @@ from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message, CallbackQuery
 
-from config import ADMINS, FILE_STORE_CHANNEL
+from config import ADMINS
+from utils import pacing, FILE_STORE_CHANNEL
 from helper_func import parse_quality, parse_episode, parse_title
 from memory_store import save_file
 from keyboards import confirm_upload, force_post_keyboard
@@ -57,7 +58,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
     # Retry loop — handles FloodWait automatically
     for attempt in range(5):
         try:
-            stored = await client.copy_message(
+            stored = await pacing.copy_message(client, 
                 chat_id             = FILE_STORE_CHANNEL,
                 from_chat_id        = data["from_chat_id"],
                 message_id          = data["msg_id"],
@@ -72,13 +73,13 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             await asyncio.sleep(wait)
         except Exception as e:
             logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
-            await client.send_message(
+            await pacing.send(client, 
                 chat_id,
                 f"❌ Failed to store <code>{data['file_name']}</code>:\n<code>{e}</code>"
             )
             return
     else:
-        await client.send_message(chat_id, f"❌ Failed after 5 retries: <code>{data['file_name']}</code>")
+        await pacing.send(client, chat_id, f"❌ Failed after 5 retries: <code>{data['file_name']}</code>")
         return
 
     ep = save_file(
@@ -97,7 +98,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
     missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
 
     if missing:
-        await client.send_message(
+        await pacing.send(client, 
             chat_id,
             f"✅ <b>Saved</b> <code>{title} {ep_str} {data['quality']}</code>\n"
             f"⏳ Missing: <code>{', '.join(missing)}</code>"
@@ -111,14 +112,14 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             for e in all_eps
         )
         if all_done and len(all_eps) > 1:
-            await client.send_message(
+            await pacing.send(client, 
                 chat_id,
                 f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>\n\n"
                 f"🎉 <b>Full season ready!</b> {len(all_eps)} episodes — post the whole season at once?",
                 reply_markup=force_post_keyboard(title_key, data["season"]),
             )
         else:
-            await client.send_message(
+            await pacing.send(client, 
                 chat_id,
                 f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>",
             )
@@ -172,7 +173,7 @@ async def on_video_upload(client: Client, message: Message):
     # ── Title already confirmed → auto-save silently ──────────
     cached = get_cached_title(admin_id, title_key)
     if cached:
-        await message.reply(
+        await pacing.reply(message, 
             f"📥 <code>{cached} {ep_str} {quality}</code> — auto-saving...",
             quote=True,
         )
@@ -190,12 +191,12 @@ async def on_video_upload(client: Client, message: Message):
     _waiting_for_title.setdefault(group_key, []).append(key)
 
     if already_asking:
-        await message.reply(
+        await pacing.reply(message, 
             f"⏳ <code>{ep_str} {quality}</code> queued — waiting for title confirm.",
             quote=True,
         )
     else:
-        await message.reply(
+        await pacing.reply(message, 
             f"📁 <b>New title detected</b>\n\n"
             f"📌 Title   : <code>{raw_title}</code>\n"
             f"📺 Episode : <code>{ep_str}</code>\n"
@@ -232,7 +233,7 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
     group_key   = (admin_id, title_key)
     queued_keys = _waiting_for_title.pop(group_key, [key])
 
-    await cb.message.edit_text(
+    await pacing.edit(cb.message, 
         f"✅ <b>Title confirmed:</b> <code>{title}</code>\n"
         f"⏳ Saving {len(queued_keys)} file(s)..."
     )
@@ -244,7 +245,7 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
             await _store_file(client, chat_id, qdata, title, title_key)
             await asyncio.sleep(0.3)
 
-    await cb.message.edit_text(
+    await pacing.edit(cb.message, 
         f"✅ <b>{title}</b> — {len(queued_keys)} file(s) saved.\n"
         f"Title remembered until next post."
     )
@@ -265,7 +266,7 @@ async def cb_edit_title(client: Client, cb: CallbackQuery):
     group_key    = (data["admin_id"], data["title_key"])
     queued_count = len(_waiting_for_title.get(group_key, [key]))
 
-    await cb.message.edit_text(
+    await pacing.edit(cb.message, 
         f"✏️ Send the <b>corrected title</b>\n"
         f"Will apply to all <b>{queued_count}</b> queued file(s):"
     )
@@ -310,7 +311,7 @@ async def on_title_edit_reply(client: Client, message: Message):
         data["editing_title"] = False
 
         ep_str = f"S{data['season']:02d}E{data['episode']:02d}"
-        await message.reply(
+        await pacing.reply(message, 
             f"✅ Title set to: <code>{new_title}</code>\n\n"
             f"Confirm for all <b>{len(queued)}</b> queued file(s)?",
             reply_markup=confirm_upload(
@@ -332,5 +333,5 @@ async def cb_discard_upload(client: Client, cb: CallbackQuery):
         # Discard ALL queued files for this title
         for qkey in _waiting_for_title.pop(group_key, []):
             _pending_confirm.pop(qkey, None)
-    await cb.message.edit_text("🗑 Discarded all queued files for this title.")
+    await pacing.edit(cb.message, "🗑 Discarded all queued files for this title.")
     await cb.answer()
