@@ -7,9 +7,9 @@ KEY FIX: All wrappers use lambda factories so each retry creates
 a FRESH coroutine — avoids "cannot reuse already awaited coroutine".
 
 Delays:
-    SEND_PAUSE = 0.3s  — send / reply / photo / sticker
-    EDIT_PAUSE = 0.2s  — edit_text / edit_reply_markup
-    COPY_PAUSE = 2.0s  — copy_message
+    SEND_PAUSE = 3.0s  — send / reply / photo / sticker
+    EDIT_PAUSE = 1.0s  — edit_text / edit_reply_markup
+    COPY_PAUSE = 3.0s  — copy_message
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from pyrogram.enums import ParseMode
 logger = logging.getLogger(__name__)
 
 SEND_PAUSE = 3.0
-EDIT_PAUSE = 0.2
+EDIT_PAUSE = 0.4
 COPY_PAUSE = 3.0
 
 
