@@ -111,17 +111,22 @@ async def post_simple_mode(
             if quality not in ch_qualities:
                 continue
 
-            # Source = quality's DB channel, Destination = post channel
             bot_name, db_ch = _get_bot_and_channel(quality, quality_bots)
             if not db_ch:
                 logger.warning(f"No DB channel for {quality} — set via /settings")
                 continue
 
+            from_chat = qdata.get("from_chat_id", 0)
+            if not from_chat:
+                logger.warning(f"No source chat for {quality} ep{episode} — skipping")
+                continue
+
             try:
+                # Direct: admin PM → post channel (no DB channel involved)
                 await pacing.copy_message(
                     client,
                     chat_id              = channel_id,
-                    from_chat_id         = db_ch,
+                    from_chat_id         = from_chat,
                     message_id           = qdata["msg_id"],
                     disable_notification = True,
                 )
@@ -145,13 +150,17 @@ async def _build_quality_batch_links(
     ch_qualities: list,
     quality_bots: dict,
     sticker_id: str | None = None,
-    notify_chat_id: int | None = None,   # admin chat to notify on sticker errors
+    notify_chat_id: int | None = None,
 ) -> dict[str, str]:
     """
-    For each quality assigned to this channel:
-      1. Re-copy all episodes in order to that quality's DB channel
-      2. Send sticker to DB channel after all episodes (appears at end of delivery)
-      3. Get first + last msg_id → batch link pointing to correct File Store Bot
+    Build batch links using msg_ids already stored in DB channel at upload time.
+    NO re-copying — files were already copied to DB channel during confirm step.
+
+    Flow per quality:
+      1. Collect existing msg_ids from memory (already in DB channel)
+      2. Send sticker to DB channel → sticker msg_id = batch end
+      3. Batch link: get-{first_msg_id * ch_id}-{sticker_msg_id * ch_id}
+         → File Store Bot delivers: ep1...epN + sticker ✅
     """
     quality_links: dict[str, str] = {}
 
@@ -161,30 +170,36 @@ async def _build_quality_batch_links(
             logger.warning(f"No File Store Bot for {quality} — skipping. Set via /settings → 🤖 File Store Bots")
             continue
 
+        # ── Copy from admin PM → DB channel at post time ───────────────
+        # Files stored in memory reference admin PM msg_ids + from_chat_id
         msg_ids = []
         for ep in _episodes_sorted(episodes):
             qdata = ep.get("qualities", {}).get(quality)
             if not qdata:
                 continue
+            from_chat = qdata.get("from_chat_id", 0)
+            if not from_chat:
+                logger.warning(f"No source chat for {quality} ep{ep['episode']} — skipping")
+                continue
             try:
-                # Fix #3 + #4 — pacing handles FloodWait + 0.1s sleep already
-                sent = await pacing.copy_message(
+                stored = await pacing.copy_message(
                     client,
                     chat_id              = db_ch,
-                    from_chat_id         = db_ch,
+                    from_chat_id         = from_chat,
                     message_id           = qdata["msg_id"],
                     disable_notification = True,
                 )
-                msg_ids.append(sent.id)
+                msg_ids.append(stored.id)
             except Exception as ex:
                 logger.error(f"Batch copy {quality} ep{ep['episode']}: {ex}")
 
         if not msg_ids:
+            logger.warning(f"No files copied for {quality} — skipping")
             continue
 
-        # ── Send sticker to DB channel BEFORE making batch link ───────────
-        # sticker msg_id becomes the END of the batch range
-        # → File Store Bot delivers: ep1 ... epN 🎴sticker  ✅
+        logger.info(f"{quality}: copied {len(msg_ids)} file(s) to DB channel")
+
+        # ── Send sticker → use its msg_id as batch end ───────────────────
         sticker_msg_id = None
         if sticker_id:
             try:
@@ -204,7 +219,7 @@ async def _build_quality_batch_links(
                     except Exception:
                         pass
 
-        # Batch end = sticker if sent, else last episode
+        # Batch end = sticker msg_id if sent, else last episode msg_id
         end_id = sticker_msg_id if sticker_msg_id else msg_ids[-1]
 
         if len(msg_ids) >= 2 or sticker_msg_id:
@@ -213,7 +228,7 @@ async def _build_quality_batch_links(
             link = await _get_link(msg_ids[0], bot_name, db_ch)
 
         quality_links[quality] = link
-        logger.info(f"✅ {quality}: {len(msg_ids)} ep(s){' + sticker' if sticker_msg_id else ''} → @{bot_name}")
+        logger.info(f"✅ {quality}: {len(msg_ids)} ep(s){' + 🎴' if sticker_msg_id else ''} → @{bot_name}")
 
     return quality_links
 
