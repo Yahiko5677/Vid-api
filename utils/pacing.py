@@ -21,7 +21,7 @@ from pyrogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
 
-SEND_PAUSE = 0.3
+SEND_PAUSE = 1.5
 EDIT_PAUSE = 0.2
 COPY_PAUSE = 1.0
 
