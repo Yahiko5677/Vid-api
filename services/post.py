@@ -94,7 +94,7 @@ async def post_simple_mode(
     episodes: list,
     sticker_id: str | None,
     ch_qualities: list,
-    quality_bots: dict,          # Fix #2 — passed in from dispatch_post
+    quality_bots: dict,
 ):
     for ep in _episodes_sorted(episodes):
         season    = ep["season"]
@@ -103,30 +103,31 @@ async def post_simple_mode(
 
         label = f"Episode {episode:02d}"
         if season > 1:
-            label = f"Season {season} • Episode {episode:02d}"
+            label = f"Season {season} \u2022 Episode {episode:02d}"
 
         await pacing.send(client, channel_id, f"**{label}**")
 
         for quality, qdata in _sorted_qualities(qualities):
             if quality not in ch_qualities:
                 continue
-            # Fix #2 — pass quality_bots not empty {}
+
+            # Source = quality's DB channel, Destination = post channel
             bot_name, db_ch = _get_bot_and_channel(quality, quality_bots)
             if not db_ch:
-                logger.warning(f"No DB channel for {quality} — skipping")
+                logger.warning(f"No DB channel for {quality} — set via /settings")
                 continue
+
             try:
-                # Fix #3 — pacing.copy_message already handles FloodWait + 0.1s
                 await pacing.copy_message(
                     client,
-                    chat_id      = channel_id,
-                    from_chat_id = db_ch,
-                    message_id   = qdata["msg_id"],
+                    chat_id              = channel_id,
+                    from_chat_id         = db_ch,
+                    message_id           = qdata["msg_id"],
+                    disable_notification = True,
                 )
             except Exception as ex:
-                logger.error(f"Simple forward failed {quality} ep{episode}: {ex}")
+                logger.error(f"Simple forward {quality} ep{episode}: {ex}")
 
-        # Sticker between every episode (last ep = end-of-season sticker too)
         if sticker_id:
             try:
                 await pacing.send_sticker(client, channel_id, sticker_id)
