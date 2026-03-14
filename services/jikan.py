@@ -2,22 +2,14 @@
 Jikan v4 service — MyAnimeList metadata (no API key required).
 
 Endpoint: https://api.jikan.moe/v4
-Rate limit: 3 req/sec, 60 req/min  →  we add a small sleep between calls.
+Rate limit: 3 req/sec, 60 req/min
 
-Returns unified meta dict:
-{
-    source      : "jikan"
-    mal_id      : int
-    title       : str
-    year        : str
-    genres      : list[str]
-    synopsis    : str
-    score       : str   (e.g. "8.42")
-    episodes    : str   (e.g. "24" or "Unknown")
-    studio      : str
-    poster_url  : str | None
-    type        : "anime"
-}
+Search priority:
+  1. Search with type=tv — main series only (no movies/OVAs/specials)
+  2. If no TV results → search without type filter, prefer TV from results
+  3. Always pick highest-scored TV type result
+
+This prevents returning MHA Movie instead of MHA TV series.
 """
 
 import asyncio
@@ -28,11 +20,40 @@ logger  = logging.getLogger(__name__)
 BASE    = "https://api.jikan.moe/v4"
 TIMEOUT = aiohttp.ClientTimeout(total=12)
 
+# Types we prefer (main series first)
+TV_TYPES    = {"TV"}
+AVOID_TYPES = {"Movie", "OVA", "ONA", "Special", "Music"}
+
 
 async def search_jikan(title: str) -> list[dict]:
-    """Search MAL for anime. Returns up to 5 results."""
+    """
+    Search MAL for anime title.
+    Returns TV-type results first, sorted by score descending.
+    """
+    # ── Pass 1: TV type only ──────────────────────────────────
+    results = await _search(title, media_type="tv")
+
+    # ── Pass 2: no type filter if pass 1 empty ────────────────
+    if not results:
+        results = await _search(title)
+
+    if not results:
+        return []
+
+    # Sort: TV first, then by score descending
+    def sort_key(r):
+        type_score = 0 if r.get("media_type", "").lower() == "tv" else 1
+        mal_score  = float(r.get("score", 0) or 0)
+        return (type_score, -mal_score)
+
+    return sorted(results, key=sort_key)
+
+
+async def _search(title: str, media_type: str | None = None) -> list[dict]:
     url    = f"{BASE}/anime"
-    params = {"q": title, "limit": 5, "sfw": False}
+    params = {"q": title, "limit": 8, "sfw": False}
+    if media_type:
+        params["type"] = media_type
 
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
         try:
@@ -41,10 +62,7 @@ async def search_jikan(title: str) -> list[dict]:
                     logger.warning(f"Jikan search HTTP {r.status}")
                     return []
                 data = await r.json()
-                results = []
-                for item in data.get("data", []):
-                    results.append(_parse_item(item))
-                return results
+                return [_parse_item(item) for item in data.get("data", [])]
         except asyncio.TimeoutError:
             logger.warning("Jikan search timed out")
             return []
@@ -56,7 +74,6 @@ async def search_jikan(title: str) -> list[dict]:
 async def get_jikan_details(mal_id: int) -> dict | None:
     """Fetch full anime details by MAL ID."""
     url = f"{BASE}/anime/{mal_id}/full"
-
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
         try:
             await asyncio.sleep(0.4)   # respect rate limit
@@ -72,14 +89,14 @@ async def get_jikan_details(mal_id: int) -> dict | None:
 
 def _parse_item(item: dict) -> dict:
     genres   = [g["name"] for g in item.get("genres", [])]
-    genres  += [g["name"] for g in item.get("themes", [])]     # add themes too
+    genres  += [g["name"] for g in item.get("themes", [])]
     studios  = [s["name"] for s in item.get("studios", [])]
     score    = item.get("score")
     episodes = item.get("episodes")
     aired    = item.get("aired", {}).get("prop", {}).get("from", {})
-    year     = str(aired.get("year", "")) if aired.get("year") else (
-               item.get("year") or item.get("season", "")
-    )
+    year     = str(aired.get("year", "")) if aired and aired.get("year") else (
+               str(item.get("year") or ""))
+
     images   = item.get("images", {})
     poster   = (
         images.get("jpg", {}).get("large_image_url")
@@ -87,20 +104,29 @@ def _parse_item(item: dict) -> dict:
         or images.get("webp", {}).get("large_image_url")
     )
     synopsis = item.get("synopsis") or ""
-    # trim long synopsis
     if len(synopsis) > 350:
         synopsis = synopsis[:347] + "..."
 
+    # Prefer English title, fall back to romaji
+    title = (
+        item.get("title_english")
+        or item.get("title")
+        or ""
+    )
+
+    media_type = item.get("type", "")
+
     return {
-        "source":     "jikan",
-        "mal_id":     item.get("mal_id"),
-        "type":       "anime",
-        "title":      item.get("title_english") or item.get("title") or "",
-        "year":       str(year) if year else "N/A",
-        "genres":     genres[:4],
-        "synopsis":   synopsis,
-        "score":      f"{score:.2f}" if isinstance(score, float) else (str(score) if score else "N/A"),
-        "episodes":   str(episodes) if episodes else "?",
-        "studio":     ", ".join(studios[:2]) if studios else "N/A",
-        "poster_url": poster,
+        "source":      "jikan",
+        "mal_id":      item.get("mal_id"),
+        "type":        "anime",
+        "media_type":  media_type,          # TV / Movie / OVA / etc.
+        "title":       title,
+        "year":        year or "N/A",
+        "genres":      genres[:4],
+        "synopsis":    synopsis,
+        "score":       f"{score:.2f}" if isinstance(score, float) else (str(score) if score else "N/A"),
+        "episodes":    str(episodes) if episodes else "?",
+        "studio":      ", ".join(studios[:2]) if studios else "N/A",
+        "poster_url":  poster,
     }
