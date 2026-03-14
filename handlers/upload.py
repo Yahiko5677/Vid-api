@@ -1,9 +1,9 @@
 import re
+import uuid
 import logging
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery
 
-from pyrogram import Client
 from config import ADMINS
 from helper_func import parse_quality, parse_episode, parse_title
 from memory_store import save_file
@@ -13,8 +13,9 @@ from services.log import log_file_received, log_file_confirmed
 logger        = logging.getLogger(__name__)
 _admin_filter = filters.private & filters.user(ADMINS)
 
-# Fix — keyed by (admin_id, file_id) so multiple files can be confirmed simultaneously
-_pending_confirm: dict[tuple, dict] = {}
+# Key = short UUID (8 chars) → stays well under Telegram's 64 byte callback limit
+# { "a1b2c3d4": { file data } }
+_pending_confirm: dict[str, dict] = {}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -38,19 +39,21 @@ async def on_video_upload(client: Client, message: Message):
     season          = season  or 1
     episode         = episode or 1
     title           = parse_title(file_name)
-    file_id         = doc.file_id
 
-    # Key = (admin_id, file_id) — unique per file
-    confirm_key = (admin_id, file_id)
-    _pending_confirm[confirm_key] = {
-        "file_id":    file_id,
-        "msg_id":     message.id,
-        "file_name":  file_name,
-        "title":      title,
-        "season":     season,
-        "episode":    episode,
-        "quality":    quality,
-        "confirm_key": f"{admin_id}:{file_id}",  # passed via callback_data
+    # Short unique key — 8 chars, well under 64 byte limit
+    key = uuid.uuid4().hex[:8]
+
+    _pending_confirm[key] = {
+        "key":       key,
+        "admin_id":  admin_id,
+        "file_id":   doc.file_id,
+        "msg_id":    message.id,
+        "file_name": file_name,
+        "title":     title,
+        "season":    season,
+        "episode":   episode,
+        "quality":   quality,
+        "editing_title": False,
     }
 
     ep_str = f"S{season:02d}E{episode:02d}"
@@ -61,7 +64,7 @@ async def on_video_upload(client: Client, message: Message):
         f"🎞 Quality : <code>{quality}</code>\n"
         f"📄 File    : <code>{file_name}</code>\n\n"
         f"Is this correct?",
-        reply_markup=confirm_upload(title, season, episode, quality, f"{admin_id}:{file_id}"),
+        reply_markup=confirm_upload(title, season, episode, quality, key),
         quote=True,
     )
 
@@ -72,21 +75,33 @@ async def on_video_upload(client: Client, message: Message):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Confirm — callback_data: confirm_upload:{admin_id}:{file_id}
+#  Confirm — callback_data: cu:{key}   (cu = confirm_upload)
 # ─────────────────────────────────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^confirm_upload:") & filters.user(ADMINS))
+@Client.on_callback_query(filters.regex(r"^cu:") & filters.user(ADMINS))
 async def cb_confirm_upload(client: Client, cb: CallbackQuery):
-    # Parse key from callback data
-    _, admin_id_str, file_id = cb.data.split(":", 2)
-    admin_id    = int(admin_id_str)
-    confirm_key = (admin_id, file_id)
-
-    data = _pending_confirm.get(confirm_key)
+    key  = cb.data.split(":", 1)[1]
+    data = _pending_confirm.get(key)
     if not data:
         return await cb.answer("Already confirmed or expired.", show_alert=True)
 
+    admin_id  = data["admin_id"]
     title_key = re.sub(r'\W+', '_', data["title"].lower()).strip("_")
+
+    # Copy file into FILE_STORE_CHANNEL → get the real msg_id for link generation
+    from config import FILE_STORE_CHANNEL
+    try:
+        stored = await client.copy_message(
+            chat_id     = FILE_STORE_CHANNEL,
+            from_chat_id= cb.message.chat.id,  # admin PM
+            message_id  = data["msg_id"],
+            disable_notification=True,
+        )
+        real_msg_id = stored.id
+    except Exception as e:
+        logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
+        return await cb.answer("❌ Failed to store file. Check bot is admin in DB channel.", show_alert=True)
+
     ep = save_file(
         admin_id  = admin_id,
         title     = data["title"],
@@ -95,7 +110,7 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
         episode   = data["episode"],
         quality   = data["quality"],
         file_id   = data["file_id"],
-        msg_id    = data["msg_id"],
+        msg_id    = real_msg_id,   # ← msg_id in FILE_STORE_CHANNEL, used for link gen
         file_name = data["file_name"],
     )
 
@@ -119,24 +134,23 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
             reply_markup=force_post_keyboard(title_key, data["season"]),
         )
 
-    _pending_confirm.pop(confirm_key, None)
+    _pending_confirm.pop(key, None)
     await cb.answer("Saved!")
 
 
 # ─────────────────────────────────────────────────────────────
-#  Edit title — callback_data: edit_title:{admin_id}:{file_id}
+#  Edit title — callback_data: et:{key}
 # ─────────────────────────────────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^edit_title:") & filters.user(ADMINS))
+@Client.on_callback_query(filters.regex(r"^et:") & filters.user(ADMINS))
 async def cb_edit_title(client: Client, cb: CallbackQuery):
-    _, admin_id_str, file_id = cb.data.split(":", 2)
-    confirm_key = (int(admin_id_str), file_id)
-    if confirm_key not in _pending_confirm:
+    key  = cb.data.split(":", 1)[1]
+    data = _pending_confirm.get(key)
+    if not data:
         return await cb.answer("Already confirmed or expired.", show_alert=True)
-    _pending_confirm[confirm_key]["editing_title"] = True
-    _pending_confirm[confirm_key]["edit_msg_id"]   = cb.message.id
+    data["editing_title"] = True
     await cb.message.edit_text(
-        f"✏️ Send the <b>corrected title</b> for:\n<code>{_pending_confirm[confirm_key]['file_name']}</code>"
+        f"✏️ Send the <b>corrected title</b> for:\n<code>{data['file_name']}</code>"
     )
     await cb.answer()
 
@@ -148,16 +162,14 @@ async def cb_edit_title(client: Client, cb: CallbackQuery):
 @Client.on_message(filters.text & _admin_filter, group=1)
 async def on_title_edit_reply(client: Client, message: Message):
     admin_id = message.from_user.id
-    # Find any pending confirm for this admin that is in editing_title state
-    editing = [
+    editing  = [
         (k, v) for k, v in _pending_confirm.items()
-        if k[0] == admin_id and v.get("editing_title")
+        if v.get("admin_id") == admin_id and v.get("editing_title")
     ]
     if not editing:
         return
 
-    # Handle all files being edited (in case multiple edits open)
-    for confirm_key, data in editing:
+    for key, data in editing:
         data["title"]         = message.text.strip()
         data["editing_title"] = False
         ep_str = f"S{data['season']:02d}E{data['episode']:02d}"
@@ -165,20 +177,18 @@ async def on_title_edit_reply(client: Client, message: Message):
             f"✅ Title updated!\n\n"
             f"📌 <code>{data['title']}</code> · <code>{ep_str}</code> · <code>{data['quality']}</code>\n\nConfirm?",
             reply_markup=confirm_upload(
-                data["title"], data["season"], data["episode"],
-                data["quality"], data["confirm_key"]
+                data["title"], data["season"], data["episode"], data["quality"], key
             ),
         )
 
 
 # ─────────────────────────────────────────────────────────────
-#  Discard — callback_data: discard_upload:{admin_id}:{file_id}
+#  Discard — callback_data: du:{key}
 # ─────────────────────────────────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^discard_upload:") & filters.user(ADMINS))
+@Client.on_callback_query(filters.regex(r"^du:") & filters.user(ADMINS))
 async def cb_discard_upload(client: Client, cb: CallbackQuery):
-    _, admin_id_str, file_id = cb.data.split(":", 2)
-    confirm_key = (int(admin_id_str), file_id)
-    _pending_confirm.pop(confirm_key, None)
+    key = cb.data.split(":", 1)[1]
+    _pending_confirm.pop(key, None)
     await cb.message.edit_text("🗑 Discarded.")
     await cb.answer()
