@@ -3,24 +3,27 @@ memory_store.py — Primary in-memory store for pending files.
 
 Priority:  MEMORY FIRST  →  DB only as restart-recovery backup.
 
-Fixes applied:
-    #1 — asyncio.create_task() replaced with loop.create_task() (safe in sync)
-    #2 — defaultdict replaced with plain dict + .get() chain (no ghost keys)
-    #3 — DB import moved to top-level (no repeated lazy imports)
+Design:
+    - Plain dict (no defaultdict) — avoids ghost key creation on reads
+    - DB collection lazy-loaded on first use — safe for Pyrofork plugin loader
+    - asyncio.get_running_loop() — correct for Python 3.10+ / 3.12
+    - datetime.now(timezone.utc) — replaces deprecated utcnow()
 """
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Plain dict — no defaultdict (fix #2)
+# Plain dict — no defaultdict
 _store: dict = {}
 
-# Cached DB collection — lazy loaded on first use (fix for plugin import order)
+# Lazy-loaded DB collection — not imported at module level
+# (avoids MongoDB connect attempt before bot.start())
 _pending_col = None
+
 
 def _get_col():
     global _pending_col
@@ -28,6 +31,10 @@ def _get_col():
         from database.db import pending_col
         _pending_col = pending_col
     return _pending_col
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ═══════════════════════════════════════════════════════
@@ -59,7 +66,7 @@ def save_file(
         "season":     season,
         "episode":    episode,
         "qualities":  {},
-        "created_at": datetime.utcnow(),
+        "created_at": _now(),
         "status":     "pending",
     })
 
@@ -68,21 +75,21 @@ def save_file(
         "msg_id":    msg_id,
         "file_name": file_name,
     }
-    ep["updated_at"] = datetime.utcnow()
+    ep["updated_at"] = _now()
     _store[admin_id][title_key][season][episode] = ep
 
-    # Fix #1 — safe fire-and-forget in sync context
+    # Fire-and-forget DB sync
+    # get_running_loop() — safe in Python 3.10+/3.12, always works in async context
     try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(_db_upsert(ep))
+        asyncio.get_running_loop().create_task(_db_upsert(ep))
     except RuntimeError:
-        pass
+        pass  # No running loop yet — DB will sync on next reload
 
     return ep
 
 
 # ═══════════════════════════════════════════════════════
-#  READ — all use safe .get() chain (fix #2)
+#  READ — all use safe .get() chain
 # ═══════════════════════════════════════════════════════
 
 def get_episode(admin_id: int, title_key: str, season: int, episode: int) -> Optional[dict]:
@@ -126,6 +133,7 @@ def count_pending(admin_id: int) -> int:
 def remove_episode(admin_id: int, title_key: str, season: int, episode: int):
     try:
         del _store[admin_id][title_key][season][episode]
+        # Clean up empty parent dicts
         if not _store[admin_id][title_key][season]:
             del _store[admin_id][title_key][season]
         if not _store[admin_id][title_key]:
@@ -135,10 +143,8 @@ def remove_episode(admin_id: int, title_key: str, season: int, episode: int):
     except KeyError:
         pass
 
-    # Fix #1
     try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(_db_delete(admin_id, title_key, season, episode))
+        asyncio.get_running_loop().create_task(_db_delete(admin_id, title_key, season, episode))
     except RuntimeError:
         pass
 
@@ -148,6 +154,7 @@ def remove_episode(admin_id: int, title_key: str, season: int, episode: int):
 # ═══════════════════════════════════════════════════════
 
 async def reload_from_db():
+    """Called once on bot startup — pulls pending docs from DB into memory."""
     try:
         cursor = _get_col().find({"status": {"$ne": "posted"}})
         docs   = await cursor.to_list(length=None)
@@ -160,7 +167,7 @@ async def reload_from_db():
             _store.setdefault(a, {})
             _store[a].setdefault(tk, {})
             _store[a][tk].setdefault(s, {})
-            _store[a][tk][s].setdefault(e, doc)  # don't overwrite existing memory
+            _store[a][tk][s].setdefault(e, doc)  # setdefault — never overwrites live memory
             count += 1
         logger.info(f"✅ Memory reloaded: {count} pending episode(s) from DB")
     except Exception as ex:
@@ -168,7 +175,7 @@ async def reload_from_db():
 
 
 # ═══════════════════════════════════════════════════════
-#  DB SYNC HELPERS
+#  DB SYNC HELPERS  (fire-and-forget)
 # ═══════════════════════════════════════════════════════
 
 async def _db_upsert(ep: dict):
