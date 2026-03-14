@@ -1,23 +1,13 @@
 """
 Post sender service.
 
-Simple Mode:
-    Episode 01
-    [file 480p forwarded]
-    [file 720p forwarded]
-    [file 1080p forwarded]
-    [sticker]
-
-Rich Mode — Option B (one season post, batch link per quality):
-    [poster]
-    🎬 Title (Year)
-    🎭 Genre | ⭐ Score
-    📊 Episodes | 🎙 Studio
-    🔊 Audio | 📝 Subs
-
-    [📥 480p E01-E13]
-    [📥 720p E01-E13]
-    [📥 1080p E01-E13]
+Simple Mode — forward files per episode in sequence + sticker between/end
+Rich Mode   — one season post with:
+  • Custom caption template
+  • Per-quality batch links (each quality → its own File Store Bot)
+  • Custom button label + layout
+  • Sticker at end of season
+  • Only sends qualities assigned to each channel
 """
 
 import asyncio
@@ -26,9 +16,9 @@ import io
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from helper_func import get_batch_link
+from helper_func import encode
 from services.tmdb import download_poster
-from config import FILE_STORE_CHANNEL
+from config import FILE_STORE_MAP, DEFAULT_CAPTION_TEMPLATE, DEFAULT_BUTTON_LABEL, DEFAULT_BUTTON_LAYOUT
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +36,57 @@ def _episodes_sorted(episodes: list) -> list:
     return sorted(episodes, key=lambda x: x["episode"])
 
 
+def _get_bot_and_channel(quality: str, quality_bots: dict) -> tuple[str, int]:
+    """
+    Get File Store Bot username + DB channel for a quality.
+    Priority: admin's per-quality override → global config.py fallback
+    """
+    override = quality_bots.get(quality, {})
+    if override.get("bot") and override.get("channel"):
+        return override["bot"], override["channel"]
+    fallback = FILE_STORE_MAP.get(quality, ("", 0))
+    return fallback[0], fallback[1]
+
+
+async def _get_link(msg_id: int, bot_username: str, channel_id: int) -> str:
+    string = f"get-{msg_id * abs(channel_id)}"
+    b64    = await encode(string)
+    return f"https://t.me/{bot_username}?start={b64}"
+
+
+async def _get_batch_link(start_id: int, end_id: int, bot_username: str, channel_id: int) -> str:
+    string = f"get-{start_id * abs(channel_id)}-{end_id * abs(channel_id)}"
+    b64    = await encode(string)
+    return f"https://t.me/{bot_username}?start={b64}"
+
+
+def _render_caption(template: str, meta: dict | None, ep_range: str, season: int,
+                    audio_info: str, sub_info: str) -> str:
+    year       = (meta.get("year") or "N/A")               if meta else "N/A"
+    genres     = " • ".join((meta.get("genres") or [])[:3]) if meta else ""
+    score      = str(meta.get("score") or "N/A")            if meta else "N/A"
+    episodes   = str(meta.get("episodes") or "?")           if meta else "?"
+    studio     = (meta.get("studio") or "N/A")              if meta else "N/A"
+    synopsis   = (meta.get("synopsis") or meta.get("overview") or "") if meta else ""
+    title      = (meta.get("title") or "")                  if meta else ""
+
+    return template.format(
+        title    = title,
+        year     = year,
+        genres   = genres,
+        score    = score,
+        episodes = episodes,
+        studio   = studio,
+        synopsis = synopsis,
+        season   = f"Season {season}",
+        ep_range = ep_range,
+        audio    = audio_info,
+        subs     = sub_info,
+    )
+
+
 # ─────────────────────────────────────────────────────────────
-#  SIMPLE MODE — forward files per episode in sequence
+#  SIMPLE MODE
 # ─────────────────────────────────────────────────────────────
 
 async def post_simple_mode(
@@ -55,10 +94,11 @@ async def post_simple_mode(
     channel_id: int,
     episodes: list,
     sticker_id: str | None,
+    ch_qualities: list,          # qualities assigned to this channel
 ):
-    for ep in _episodes_sorted(episodes):
-        season   = ep["season"]
-        episode  = ep["episode"]
+    for i, ep in enumerate(_episodes_sorted(episodes)):
+        season    = ep["season"]
+        episode   = ep["episode"]
         qualities = ep.get("qualities", {})
 
         label = f"Episode {episode:02d}"
@@ -66,55 +106,60 @@ async def post_simple_mode(
             label = f"Season {season} • Episode {episode:02d}"
 
         await client.send_message(channel_id, f"**{label}**")
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
         for quality, qdata in _sorted_qualities(qualities):
-            try:
-                await client.copy_message(
-                    chat_id             = channel_id,
-                    from_chat_id        = FILE_STORE_CHANNEL,
-                    message_id          = qdata["msg_id"],
-                )
-                await asyncio.sleep(0.3)
-            except Exception as e:
-                logger.error(f"Failed to forward {quality} ep{episode}: {e}")
+            if quality not in ch_qualities:
+                continue
+            bot_name, db_ch = _get_bot_and_channel(quality, {})
+            for attempt in range(5):
+                try:
+                    await client.copy_message(
+                        chat_id             = channel_id,
+                        from_chat_id        = db_ch,
+                        message_id          = qdata["msg_id"],
+                    )
+                    await asyncio.sleep(0.1)
+                    break
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 2)
+                except Exception as ex:
+                    logger.error(f"Simple forward failed {quality} ep{episode}: {ex}")
+                    break
 
-        # Sticker between every episode (last ep = end of season sticker too)
+        # Sticker between episodes (last = end-of-season sticker)
         if sticker_id:
             try:
                 await client.send_sticker(channel_id, sticker_id)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
             except Exception as e:
-                logger.warning(f"Sticker send failed: {e}")
+                logger.warning(f"Sticker failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
-#  RICH MODE — one season post, batch link per quality
+#  RICH MODE — batch links per quality, custom caption/buttons
 # ─────────────────────────────────────────────────────────────
 
 async def _build_quality_batch_links(
     client: Client,
     episodes: list,
+    ch_qualities: list,
+    quality_bots: dict,
 ) -> dict[str, str]:
     """
-    For each quality:
-      1. Re-copy all episodes IN ORDER to FILE_STORE_CHANNEL
-      2. Record first + last msg_id
-      3. Generate batch link covering all episodes of that quality
-
-    Returns { "480p": link, "720p": link, "1080p": link }
+    For each quality assigned to this channel:
+      1. Re-copy all episodes in order to that quality's DB channel
+      2. Get first + last msg_id → batch link pointing to correct File Store Bot
     """
-    # Collect all available qualities across all episodes
-    all_qualities: set[str] = set()
-    for ep in episodes:
-        all_qualities.update(ep.get("qualities", {}).keys())
-
     quality_links: dict[str, str] = {}
 
-    for quality in sorted(all_qualities, key=lambda x: QUALITY_ORDER.index(x) if x in QUALITY_ORDER else 99):
-        msg_ids = []
+    for quality in [q for q in QUALITY_ORDER if q in ch_qualities]:
+        bot_name, db_ch = _get_bot_and_channel(quality, quality_bots)
+        if not bot_name or not db_ch:
+            logger.warning(f"No File Store Bot configured for {quality} — skipping")
+            continue
 
-        # Copy episodes in order for this quality
+        msg_ids = []
         for ep in _episodes_sorted(episodes):
             qdata = ep.get("qualities", {}).get(quality)
             if not qdata:
@@ -122,8 +167,8 @@ async def _build_quality_batch_links(
             for attempt in range(5):
                 try:
                     sent = await client.copy_message(
-                        chat_id             = FILE_STORE_CHANNEL,
-                        from_chat_id        = FILE_STORE_CHANNEL,
+                        chat_id             = db_ch,
+                        from_chat_id        = db_ch,
                         message_id          = qdata["msg_id"],
                         disable_notification= True,
                     )
@@ -131,23 +176,21 @@ async def _build_quality_batch_links(
                     await asyncio.sleep(0.1)
                     break
                 except FloodWait as e:
-                    wait = e.value + 2
-                    logger.warning(f"FloodWait {wait}s on batch copy — waiting...")
-                    await asyncio.sleep(wait)
-                except Exception as e:
-                    logger.error(f"Batch copy failed {quality} ep{ep['episode']}: {e}")
+                    logger.warning(f"FloodWait {e.value+2}s on batch copy...")
+                    await asyncio.sleep(e.value + 2)
+                except Exception as ex:
+                    logger.error(f"Batch copy {quality} ep{ep['episode']}: {ex}")
                     break
 
         if len(msg_ids) >= 2:
-            link = await get_batch_link(msg_ids[0], msg_ids[-1])
+            link = await _get_batch_link(msg_ids[0], msg_ids[-1], bot_name, db_ch)
         elif len(msg_ids) == 1:
-            from helper_func import get_link
-            link = await get_link(msg_ids[0])
+            link = await _get_link(msg_ids[0], bot_name, db_ch)
         else:
             continue
 
         quality_links[quality] = link
-        logger.info(f"✅ Batch link built for {quality}: {len(msg_ids)} ep(s)")
+        logger.info(f"✅ {quality} batch link: {len(msg_ids)} ep(s) → @{bot_name}")
 
     return quality_links
 
@@ -157,79 +200,68 @@ async def post_rich_mode(
     channel_id: int,
     episodes: list,
     meta: dict | None,
-    audio_info: str,
-    sub_info: str,
+    settings: dict,
+    ch_qualities: list,
 ):
-    """One season post with batch link per quality."""
     if not episodes:
         return
 
-    title  = episodes[0].get("title", "Unknown")
-    season = episodes[0]["season"]
-    ep_count = len(episodes)
-
-    # Meta fields
-    year       = (meta.get("year") or "")            if meta else ""
-    genres     = " • ".join((meta.get("genres") or [])[:3]) if meta else ""
-    overview   = (meta.get("synopsis") or meta.get("overview") or "") if meta else ""
-    poster_url = meta.get("poster_url")               if meta else None
-    score      = meta.get("score")                    if meta else None
-    episodes_total = meta.get("episodes")             if meta else None
-    studio     = meta.get("studio")                   if meta else None
-
-    # ── Build batch links per quality ────────────────────────
-    quality_links = await _build_quality_batch_links(client, episodes)
-
-    # ── Caption ───────────────────────────────────────────────
-    year_str  = f" ({year})" if year and year not in ("N/A", "") else ""
+    season    = episodes[0]["season"]
+    ep_count  = len(episodes)
     ep_range  = f"E01-E{ep_count:02d}" if ep_count > 1 else "E01"
-    season_str = f"Season {season}"
+    audio     = settings.get("audio_info", "Hindi + English")
+    subs      = settings.get("sub_info", "English")
+    template  = settings.get("caption_template", DEFAULT_CAPTION_TEMPLATE)
+    btn_label = settings.get("button_label", DEFAULT_BUTTON_LABEL)
+    layout    = settings.get("button_layout", DEFAULT_BUTTON_LAYOUT)
+    q_bots    = settings.get("quality_bots", {})
+    sticker   = settings.get("sticker_id")
+    poster_url = meta.get("poster_url") if meta else None
 
-    caption  = f"🎬 <b>{title}{year_str}</b>\n"
-    caption += f"📺 {season_str} · <code>{ep_range}</code>\n"
-    if genres:
-        caption += f"🎭 {genres}\n"
-    if score and str(score) not in ("N/A", "None", ""):
-        caption += f"⭐ MAL Score: <b>{score}</b>\n"
-    if episodes_total and str(episodes_total) not in ("?", "None", ""):
-        caption += f"📊 Total Episodes: <code>{episodes_total}</code>\n"
-    if studio and studio not in ("N/A", "None", ""):
-        caption += f"🎙 Studio: <code>{studio}</code>\n"
-    caption += f"\n🔊 {audio_info}  |  📝 {sub_info}\n"
-    if overview:
-        caption += f"\n<i>{overview}</i>\n"
+    # Build caption
+    try:
+        caption = _render_caption(template, meta, ep_range, season, audio, subs)
+    except KeyError as e:
+        caption = f"❌ Caption template error — unknown variable {e}"
+        logger.error(f"Caption render error: {e}")
 
-    # ── Quality buttons (one per quality, batch link) ─────────
-    buttons = []
-    for quality in sorted(quality_links.keys(), key=lambda x: QUALITY_ORDER.index(x) if x in QUALITY_ORDER else 99):
-        link = quality_links[quality]
-        buttons.append([InlineKeyboardButton(
-            f"📥 {quality}  •  {ep_range}",
-            url=link
-        )])
+    # Build batch links
+    quality_links = await _build_quality_batch_links(client, episodes, ch_qualities, q_bots)
 
-    markup = InlineKeyboardMarkup(buttons) if buttons else None
+    # Build buttons via keyboard builder
+    from keyboards import quality_buttons
+    markup = quality_buttons(quality_links, btn_label, layout, ep_range)
 
-    # ── Send with poster or text fallback ─────────────────────
+    # Send with poster or text fallback
+    sent = False
     if poster_url:
         poster_bytes = await download_poster(poster_url)
         if poster_bytes:
             try:
                 await client.send_photo(
-                    chat_id    = channel_id,
-                    photo      = io.BytesIO(poster_bytes),
-                    caption    = caption,
+                    chat_id      = channel_id,
+                    photo        = io.BytesIO(poster_bytes),
+                    caption      = caption,
                     reply_markup = markup,
                 )
-                return
+                sent = True
             except Exception as e:
-                logger.warning(f"Poster send failed, falling back to text: {e}")
+                logger.warning(f"Poster send failed: {e}")
 
-    await client.send_message(
-        chat_id    = channel_id,
-        text       = caption,
-        reply_markup = markup,
-    )
+    if not sent:
+        await client.send_message(
+            chat_id      = channel_id,
+            text         = caption,
+            reply_markup = markup,
+        )
+
+    # Sticker at end of season
+    if sticker:
+        await asyncio.sleep(0.5)
+        try:
+            await client.send_sticker(channel_id, sticker)
+        except Exception as e:
+            logger.warning(f"End sticker failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -238,27 +270,23 @@ async def post_rich_mode(
 
 async def dispatch_post(
     client: Client,
-    channel_ids: list,
+    channel_ids: list[int],
     episodes: list,
     settings: dict,
     meta: dict | None = None,
 ):
     mode       = settings.get("post_mode", "simple")
     sticker_id = settings.get("sticker_id")
-    audio_info = settings.get("audio_info", "Hindi + English")
-    sub_info   = settings.get("sub_info", "English")
+    all_channels = settings.get("channels", [])
 
     for ch_id in channel_ids:
+        # Get quality assignment for this specific channel
+        ch_cfg       = next((c for c in all_channels if c["id"] == ch_id), {})
+        ch_qualities = ch_cfg.get("qualities", ["480p","720p","1080p"])
+
         if mode == "simple":
-            await post_simple_mode(client, ch_id, episodes, sticker_id)
+            await post_simple_mode(client, ch_id, episodes, sticker_id, ch_qualities)
         else:
-            await post_rich_mode(client, ch_id, episodes, meta, audio_info, sub_info)
-            # Fix #4 — sticker after season post in rich mode too
-            if sticker_id:
-                try:
-                    await asyncio.sleep(0.5)
-                    await client.send_sticker(ch_id, sticker_id)
-                except Exception as e:
-                    logger.warning(f"Sticker send failed: {e}")
+            await post_rich_mode(client, ch_id, episodes, meta, settings, ch_qualities)
 
         await asyncio.sleep(0.5)
