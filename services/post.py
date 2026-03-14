@@ -179,33 +179,41 @@ async def _build_quality_batch_links(
             except Exception as ex:
                 logger.error(f"Batch copy {quality} ep{ep['episode']}: {ex}")
 
-        if len(msg_ids) >= 2:
-            link = await _get_batch_link(msg_ids[0], msg_ids[-1], bot_name, db_ch)
-        elif len(msg_ids) == 1:
-            link = await _get_link(msg_ids[0], bot_name, db_ch)
-        else:
+        if not msg_ids:
             continue
 
-        quality_links[quality] = link
-        logger.info(f"✅ {quality} batch link: {len(msg_ids)} ep(s) → @{bot_name}")
-
-        # Send sticker to DB channel after all episodes of this quality
-        # So when File Store Bot delivers the batch, sticker appears at the end
+        # ── Send sticker to DB channel BEFORE making batch link ───────────
+        # sticker msg_id becomes the END of the batch range
+        # → File Store Bot delivers: ep1 ... epN 🎴sticker  ✅
+        sticker_msg_id = None
         if sticker_id:
             try:
-                await pacing.send_sticker(client, db_ch, sticker_id)
-                logger.info(f"🎴 Sticker sent to DB channel for {quality}")
+                sent_sticker   = await client.send_sticker(chat_id=db_ch, sticker=sticker_id)
+                sticker_msg_id = sent_sticker.id
+                await asyncio.sleep(2.0)
+                logger.info(f"🎴 Sticker in {quality} DB channel id={sticker_msg_id}")
             except Exception as e:
-                logger.warning(f"Sticker to DB channel failed for {quality}: {e}")
-                # Surface error — bot may not have send permission in DB channel
+                logger.error(f"❌ Sticker failed {quality} DB channel {db_ch}: {e}")
                 if notify_chat_id:
                     try:
                         await pacing.send(client, notify_chat_id,
-                            f"⚠️ Sticker failed for <code>{quality}</code> DB channel\n"
-                            f"Make sure bot is admin in that channel.\n<code>{e}</code>"
+                            f"⚠️ <b>Sticker not sent</b> to <code>{quality}</code> DB channel\n"
+                            f"Bot must be <b>admin with post permission</b> in <code>{db_ch}</code>\n"
+                            f"Error: <code>{e}</code>"
                         )
                     except Exception:
                         pass
+
+        # Batch end = sticker if sent, else last episode
+        end_id = sticker_msg_id if sticker_msg_id else msg_ids[-1]
+
+        if len(msg_ids) >= 2 or sticker_msg_id:
+            link = await _get_batch_link(msg_ids[0], end_id, bot_name, db_ch)
+        else:
+            link = await _get_link(msg_ids[0], bot_name, db_ch)
+
+        quality_links[quality] = link
+        logger.info(f"✅ {quality}: {len(msg_ids)} ep(s){' + sticker' if sticker_msg_id else ''} → @{bot_name}")
 
     return quality_links
 
