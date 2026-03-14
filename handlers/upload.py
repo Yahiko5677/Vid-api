@@ -1,10 +1,11 @@
 import re
 import uuid
+import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery
 
-from config import ADMINS
+from config import ADMINS, FILE_STORE_CHANNEL
 from helper_func import parse_quality, parse_episode, parse_title
 from memory_store import save_file
 from keyboards import confirm_upload, force_post_keyboard
@@ -13,9 +14,93 @@ from services.log import log_file_received, log_file_confirmed
 logger        = logging.getLogger(__name__)
 _admin_filter = filters.private & filters.user(ADMINS)
 
-# Key = short UUID (8 chars) → stays well under Telegram's 64 byte callback limit
-# { "a1b2c3d4": { file data } }
+# ── Stores ────────────────────────────────────────────────────────────────
+# { key: file data }
 _pending_confirm: dict[str, dict] = {}
+
+# Confirmed titles per admin — cleared after posting
+# { admin_id: { title_key: confirmed_title } }
+_title_cache: dict[int, dict] = {}
+
+# Files queued per (admin_id, title_key) waiting for one title confirm
+# { (admin_id, title_key): [key, key, ...] }
+_waiting_for_title: dict[tuple, list] = {}
+
+
+def get_cached_title(admin_id: int, title_key: str) -> str | None:
+    return _title_cache.get(admin_id, {}).get(title_key)
+
+
+def cache_title(admin_id: int, title_key: str, title: str):
+    _title_cache.setdefault(admin_id, {})[title_key] = title
+
+
+def clear_title_cache(admin_id: int, title_key: str):
+    """Called after posting — remove title from cache."""
+    _title_cache.get(admin_id, {}).pop(title_key, None)
+
+
+def _make_title_key(title: str) -> str:
+    return re.sub(r'\W+', '_', title.lower()).strip("_")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Store file — copy to FILE_STORE_CHANNEL, save to memory
+# ─────────────────────────────────────────────────────────────
+
+async def _store_file(client: Client, chat_id: int, data: dict, title: str, title_key: str):
+    """Copy file to FILE_STORE_CHANNEL and save to memory store."""
+    admin_id = data["admin_id"]
+    ep_str   = f"S{data['season']:02d}E{data['episode']:02d}"
+
+    try:
+        stored = await client.copy_message(
+            chat_id             = FILE_STORE_CHANNEL,
+            from_chat_id        = data["from_chat_id"],
+            message_id          = data["msg_id"],
+            disable_notification= True,
+        )
+        real_msg_id = stored.id
+    except Exception as e:
+        logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
+        await client.send_message(
+            chat_id,
+            f"❌ Failed to store <code>{data['file_name']}</code>:\n<code>{e}</code>"
+        )
+        return
+
+    ep = save_file(
+        admin_id  = admin_id,
+        title     = title,
+        title_key = title_key,
+        season    = data["season"],
+        episode   = data["episode"],
+        quality   = data["quality"],
+        file_id   = data["file_id"],
+        msg_id    = real_msg_id,
+        file_name = data["file_name"],
+    )
+
+    have    = list(ep["qualities"].keys())
+    missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
+
+    if missing:
+        await client.send_message(
+            chat_id,
+            f"✅ <b>Saved</b> <code>{title} {ep_str} {data['quality']}</code>\n"
+            f"⏳ Missing: <code>{', '.join(missing)}</code>"
+        )
+    else:
+        await client.send_message(
+            chat_id,
+            f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>",
+            reply_markup=force_post_keyboard(title_key, data["season"]),
+        )
+
+    from database.db import settings_col
+    s      = await settings_col.find_one({"admin_id": admin_id}) or {}
+    log_ch = s.get("log_channel_id")
+    await log_file_confirmed(client, admin_id, title, data["quality"], ep_str, log_ch)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -38,44 +123,70 @@ async def on_video_upload(client: Client, message: Message):
     season, episode = parse_episode(file_name)
     season          = season  or 1
     episode         = episode or 1
-    title           = parse_title(file_name)
+    raw_title       = parse_title(file_name)
+    title_key       = _make_title_key(raw_title)
+    key             = uuid.uuid4().hex[:8]
+    ep_str          = f"S{season:02d}E{episode:02d}"
 
-    # Short unique key — 8 chars, well under 64 byte limit
-    key = uuid.uuid4().hex[:8]
-
-    _pending_confirm[key] = {
-        "key":       key,
-        "admin_id":  admin_id,
-        "file_id":   doc.file_id,
-        "msg_id":    message.id,
-        "file_name": file_name,
-        "title":     title,
-        "season":    season,
-        "episode":   episode,
-        "quality":   quality,
+    data = {
+        "key":           key,
+        "admin_id":      admin_id,
+        "file_id":       doc.file_id,
+        "msg_id":        message.id,
+        "from_chat_id":  message.chat.id,
+        "file_name":     file_name,
+        "raw_title":     raw_title,
+        "title_key":     title_key,
+        "season":        season,
+        "episode":       episode,
+        "quality":       quality,
         "editing_title": False,
     }
 
-    ep_str = f"S{season:02d}E{episode:02d}"
-    await message.reply(
-        f"📁 <b>File detected</b>\n\n"
-        f"📌 Title   : <code>{title}</code>\n"
-        f"📺 Episode : <code>{ep_str}</code>\n"
-        f"🎞 Quality : <code>{quality}</code>\n"
-        f"📄 File    : <code>{file_name}</code>\n\n"
-        f"Is this correct?",
-        reply_markup=confirm_upload(title, season, episode, quality, key),
-        quote=True,
-    )
+    # ── Title already confirmed → auto-save silently ──────────
+    cached = get_cached_title(admin_id, title_key)
+    if cached:
+        await message.reply(
+            f"📥 <code>{cached} {ep_str} {quality}</code> — auto-saving...",
+            quote=True,
+        )
+        await _store_file(client, message.chat.id, data, cached, title_key)
+        from database.db import settings_col
+        s      = await settings_col.find_one({"admin_id": admin_id}) or {}
+        log_ch = s.get("log_channel_id")
+        await log_file_received(client, admin_id, cached, quality, ep_str, log_ch)
+        return
+
+    # ── New title_key — queue and ask once ────────────────────
+    _pending_confirm[key] = data
+    group_key      = (admin_id, title_key)
+    already_asking = group_key in _waiting_for_title
+    _waiting_for_title.setdefault(group_key, []).append(key)
+
+    if already_asking:
+        await message.reply(
+            f"⏳ <code>{ep_str} {quality}</code> queued — waiting for title confirm.",
+            quote=True,
+        )
+    else:
+        await message.reply(
+            f"📁 <b>New title detected</b>\n\n"
+            f"📌 Title   : <code>{raw_title}</code>\n"
+            f"📺 Episode : <code>{ep_str}</code>\n"
+            f"🎞 Quality : <code>{quality}</code>\n\n"
+            f"Confirm title for <b>all queued files</b>:",
+            reply_markup=confirm_upload(raw_title, season, episode, quality, key),
+            quote=True,
+        )
 
     from database.db import settings_col
     s      = await settings_col.find_one({"admin_id": admin_id}) or {}
     log_ch = s.get("log_channel_id")
-    await log_file_received(client, admin_id, title, quality, ep_str, log_ch)
+    await log_file_received(client, admin_id, raw_title, quality, ep_str, log_ch)
 
 
 # ─────────────────────────────────────────────────────────────
-#  Confirm — callback_data: cu:{key}   (cu = confirm_upload)
+#  Confirm — saves ALL queued files for this title_key
 # ─────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^cu:") & filters.user(ADMINS))
@@ -86,60 +197,35 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
         return await cb.answer("Already confirmed or expired.", show_alert=True)
 
     admin_id  = data["admin_id"]
-    title_key = re.sub(r'\W+', '_', data["title"].lower()).strip("_")
+    title_key = data["title_key"]
+    title     = data["raw_title"]
+    chat_id   = cb.message.chat.id
 
-    # Copy file into FILE_STORE_CHANNEL → get the real msg_id for link generation
-    from config import FILE_STORE_CHANNEL
-    try:
-        stored = await client.copy_message(
-            chat_id     = FILE_STORE_CHANNEL,
-            from_chat_id= cb.message.chat.id,  # admin PM
-            message_id  = data["msg_id"],
-            disable_notification=True,
-        )
-        real_msg_id = stored.id
-    except Exception as e:
-        logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
-        return await cb.answer("❌ Failed to store file. Check bot is admin in DB channel.", show_alert=True)
+    cache_title(admin_id, title_key, title)
 
-    ep = save_file(
-        admin_id  = admin_id,
-        title     = data["title"],
-        title_key = title_key,
-        season    = data["season"],
-        episode   = data["episode"],
-        quality   = data["quality"],
-        file_id   = data["file_id"],
-        msg_id    = real_msg_id,   # ← msg_id in FILE_STORE_CHANNEL, used for link gen
-        file_name = data["file_name"],
+    group_key   = (admin_id, title_key)
+    queued_keys = _waiting_for_title.pop(group_key, [key])
+
+    await cb.message.edit_text(
+        f"✅ <b>Title confirmed:</b> <code>{title}</code>\n"
+        f"⏳ Saving {len(queued_keys)} file(s)..."
     )
+    await cb.answer("Saving all queued files...")
 
-    have    = list(ep["qualities"].keys())
-    missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
-    ep_str  = f"S{data['season']:02d}E{data['episode']:02d}"
+    for qkey in queued_keys:
+        qdata = _pending_confirm.pop(qkey, None)
+        if qdata:
+            await _store_file(client, chat_id, qdata, title, title_key)
+            await asyncio.sleep(0.3)
 
-    from database.db import settings_col
-    s      = await settings_col.find_one({"admin_id": admin_id}) or {}
-    log_ch = s.get("log_channel_id")
-    await log_file_confirmed(client, admin_id, data["title"], data["quality"], ep_str, log_ch)
-
-    if missing:
-        await cb.message.edit_text(
-            f"✅ <b>Saved!</b> <code>{data['title']} {ep_str} {data['quality']}</code>\n\n"
-            f"⏳ Still waiting for: <code>{', '.join(missing)}</code>"
-        )
-    else:
-        await cb.message.edit_text(
-            f"✅ <b>All qualities ready!</b> <code>{data['title']} {ep_str}</code>\n\nReady to post:",
-            reply_markup=force_post_keyboard(title_key, data["season"]),
-        )
-
-    _pending_confirm.pop(key, None)
-    await cb.answer("Saved!")
+    await cb.message.edit_text(
+        f"✅ <b>{title}</b> — {len(queued_keys)} file(s) saved.\n"
+        f"Title remembered until next post."
+    )
 
 
 # ─────────────────────────────────────────────────────────────
-#  Edit title — callback_data: et:{key}
+#  Edit title
 # ─────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^et:") & filters.user(ADMINS))
@@ -148,18 +234,24 @@ async def cb_edit_title(client: Client, cb: CallbackQuery):
     data = _pending_confirm.get(key)
     if not data:
         return await cb.answer("Already confirmed or expired.", show_alert=True)
+
     data["editing_title"] = True
+    group_key    = (data["admin_id"], data["title_key"])
+    queued_count = len(_waiting_for_title.get(group_key, [key]))
+
     await cb.message.edit_text(
-        f"✏️ Send the <b>corrected title</b> for:\n<code>{data['file_name']}</code>"
+        f"✏️ Send the <b>corrected title</b>\n"
+        f"Will apply to all <b>{queued_count}</b> queued file(s):"
     )
     await cb.answer()
 
 
-# ─────────────────────────────────────────────────────────────
-#  Title edit text reply
-# ─────────────────────────────────────────────────────────────
-
-@Client.on_message(filters.text & _admin_filter, group=1)
+# Fix #1 & #2 — recalculate title_key + guard against commands
+@Client.on_message(
+    filters.text & ~filters.command(["start","settings","pending","log","stats","cancel"])
+    & _admin_filter,
+    group=1
+)
 async def on_title_edit_reply(client: Client, message: Message):
     admin_id = message.from_user.id
     editing  = [
@@ -169,26 +261,50 @@ async def on_title_edit_reply(client: Client, message: Message):
     if not editing:
         return
 
+    new_title     = message.text.strip()
+    new_title_key = _make_title_key(new_title)  # Fix #1 — recalculate
+
     for key, data in editing:
-        data["title"]         = message.text.strip()
+        old_title_key = data["title_key"]
+        old_group_key = (admin_id, old_title_key)
+        new_group_key = (admin_id, new_title_key)
+
+        # Move queued keys to new title_key group
+        queued = _waiting_for_title.pop(old_group_key, [])
+        _waiting_for_title[new_group_key] = queued
+
+        # Update all queued files' title_key
+        for qkey in queued:
+            if qkey in _pending_confirm:
+                _pending_confirm[qkey]["title_key"] = new_title_key
+                _pending_confirm[qkey]["raw_title"] = new_title
+
+        data["raw_title"]     = new_title
+        data["title_key"]     = new_title_key
         data["editing_title"] = False
+
         ep_str = f"S{data['season']:02d}E{data['episode']:02d}"
         await message.reply(
-            f"✅ Title updated!\n\n"
-            f"📌 <code>{data['title']}</code> · <code>{ep_str}</code> · <code>{data['quality']}</code>\n\nConfirm?",
+            f"✅ Title set to: <code>{new_title}</code>\n\n"
+            f"Confirm for all <b>{len(queued)}</b> queued file(s)?",
             reply_markup=confirm_upload(
-                data["title"], data["season"], data["episode"], data["quality"], key
+                new_title, data["season"], data["episode"], data["quality"], key
             ),
         )
 
 
 # ─────────────────────────────────────────────────────────────
-#  Discard — callback_data: du:{key}
+#  Discard
 # ─────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^du:") & filters.user(ADMINS))
 async def cb_discard_upload(client: Client, cb: CallbackQuery):
-    key = cb.data.split(":", 1)[1]
-    _pending_confirm.pop(key, None)
-    await cb.message.edit_text("🗑 Discarded.")
+    key  = cb.data.split(":", 1)[1]
+    data = _pending_confirm.pop(key, None)
+    if data:
+        group_key = (data["admin_id"], data["title_key"])
+        # Discard ALL queued files for this title
+        for qkey in _waiting_for_title.pop(group_key, []):
+            _pending_confirm.pop(qkey, None)
+    await cb.message.edit_text("🗑 Discarded all queued files for this title.")
     await cb.answer()
