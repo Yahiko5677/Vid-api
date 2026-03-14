@@ -3,21 +3,21 @@ Post sender service.
 
 Simple Mode:
     Episode 01
-    [file 480p]
-    [file 720p]
-    [file 1080p]
-    [sticker]   ← between eps + end of season
+    [file 480p forwarded]
+    [file 720p forwarded]
+    [file 1080p forwarded]
+    [sticker]
 
-Rich Mode (uses unified meta from Jikan or TMDB):
-    [poster image]
+Rich Mode — Option B (one season post, batch link per quality):
+    [poster]
     🎬 Title (Year)
-    🎭 Genre
-    ⭐ MAL Score
-    📊 Episodes
-    🎙 Studio
+    🎭 Genre | ⭐ Score
+    📊 Episodes | 🎙 Studio
     🔊 Audio | 📝 Subs
-    ───────────────────
-    [📥 480p]  [📥 720p]  [📥 1080p]
+
+    [📥 480p E01-E13]
+    [📥 720p E01-E13]
+    [📥 1080p E01-E13]
 """
 
 import asyncio
@@ -25,8 +25,9 @@ import logging
 import io
 from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from helper_func import get_link
+from helper_func import get_batch_link
 from services.tmdb import download_poster
+from config import FILE_STORE_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,12 @@ def _sorted_qualities(qualities: dict) -> list:
     )
 
 
+def _episodes_sorted(episodes: list) -> list:
+    return sorted(episodes, key=lambda x: x["episode"])
+
+
 # ─────────────────────────────────────────────────────────────
-#  SIMPLE MODE
+#  SIMPLE MODE — forward files per episode in sequence
 # ─────────────────────────────────────────────────────────────
 
 async def post_simple_mode(
@@ -50,7 +55,7 @@ async def post_simple_mode(
     episodes: list,
     sticker_id: str | None,
 ):
-    for i, ep in enumerate(episodes):
+    for ep in _episodes_sorted(episodes):
         season   = ep["season"]
         episode  = ep["episode"]
         qualities = ep.get("qualities", {})
@@ -65,15 +70,15 @@ async def post_simple_mode(
         for quality, qdata in _sorted_qualities(qualities):
             try:
                 await client.copy_message(
-                    chat_id=channel_id,
-                    from_chat_id=client.db_channel_id,
-                    message_id=qdata["msg_id"],
+                    chat_id             = channel_id,
+                    from_chat_id        = FILE_STORE_CHANNEL,
+                    message_id          = qdata["msg_id"],
                 )
                 await asyncio.sleep(0.3)
             except Exception as e:
                 logger.error(f"Failed to forward {quality} ep{episode}: {e}")
 
-        # Sticker between every episode (including after last = end-of-season)
+        # Sticker between every episode (last ep = end of season sticker too)
         if sticker_id:
             try:
                 await client.send_sticker(channel_id, sticker_id)
@@ -83,63 +88,117 @@ async def post_simple_mode(
 
 
 # ─────────────────────────────────────────────────────────────
-#  RICH MODE
+#  RICH MODE — one season post, batch link per quality
 # ─────────────────────────────────────────────────────────────
+
+async def _build_quality_batch_links(
+    client: Client,
+    episodes: list,
+) -> dict[str, str]:
+    """
+    For each quality:
+      1. Re-copy all episodes IN ORDER to FILE_STORE_CHANNEL
+      2. Record first + last msg_id
+      3. Generate batch link covering all episodes of that quality
+
+    Returns { "480p": link, "720p": link, "1080p": link }
+    """
+    # Collect all available qualities across all episodes
+    all_qualities: set[str] = set()
+    for ep in episodes:
+        all_qualities.update(ep.get("qualities", {}).keys())
+
+    quality_links: dict[str, str] = {}
+
+    for quality in sorted(all_qualities, key=lambda x: QUALITY_ORDER.index(x) if x in QUALITY_ORDER else 99):
+        msg_ids = []
+
+        # Copy episodes in order for this quality
+        for ep in _episodes_sorted(episodes):
+            qdata = ep.get("qualities", {}).get(quality)
+            if not qdata:
+                continue
+            try:
+                sent = await client.copy_message(
+                    chat_id             = FILE_STORE_CHANNEL,
+                    from_chat_id        = FILE_STORE_CHANNEL,
+                    message_id          = qdata["msg_id"],
+                    disable_notification= True,
+                )
+                msg_ids.append(sent.id)
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Batch copy failed {quality} ep{ep['episode']}: {e}")
+
+        if len(msg_ids) >= 2:
+            link = await get_batch_link(msg_ids[0], msg_ids[-1])
+        elif len(msg_ids) == 1:
+            from helper_func import get_link
+            link = await get_link(msg_ids[0])
+        else:
+            continue
+
+        quality_links[quality] = link
+        logger.info(f"✅ Batch link built for {quality}: {len(msg_ids)} ep(s)")
+
+    return quality_links
+
 
 async def post_rich_mode(
     client: Client,
     channel_id: int,
-    episode: dict,
-    meta: dict | None,          # unified meta from metadata.py
+    episodes: list,
+    meta: dict | None,
     audio_info: str,
     sub_info: str,
 ):
-    title     = episode.get("title", "Unknown")
-    season    = episode["season"]
-    ep_num    = episode["episode"]
-    qualities = episode.get("qualities", {})
+    """One season post with batch link per quality."""
+    if not episodes:
+        return
 
-    # Unified meta fields (works for both Jikan and TMDB)
-    year       = (meta.get("year") or "")       if meta else ""
+    title  = episodes[0].get("title", "Unknown")
+    season = episodes[0]["season"]
+    ep_count = len(episodes)
+
+    # Meta fields
+    year       = (meta.get("year") or "")            if meta else ""
     genres     = " • ".join((meta.get("genres") or [])[:3]) if meta else ""
     overview   = (meta.get("synopsis") or meta.get("overview") or "") if meta else ""
-    poster_url = meta.get("poster_url")         if meta else None
-    score      = meta.get("score")              if meta else None
-    episodes   = meta.get("episodes")           if meta else None
-    studio     = meta.get("studio")             if meta else None
+    poster_url = meta.get("poster_url")               if meta else None
+    score      = meta.get("score")                    if meta else None
+    episodes_total = meta.get("episodes")             if meta else None
+    studio     = meta.get("studio")                   if meta else None
 
-    ep_label = f"S{season:02d}E{ep_num:02d}"
+    # ── Build batch links per quality ────────────────────────
+    quality_links = await _build_quality_batch_links(client, episodes)
 
-    # ── Caption ──────────────────────────────────────────────
-    year_str = f" ({year})" if year and year not in ("N/A", "") else ""
-    caption  = f"🎬 **{title}{year_str}**\n"
-    caption += f"📺 `{ep_label}`\n"
+    # ── Caption ───────────────────────────────────────────────
+    year_str  = f" ({year})" if year and year not in ("N/A", "") else ""
+    ep_range  = f"E01-E{ep_count:02d}" if ep_count > 1 else "E01"
+    season_str = f"Season {season}"
 
+    caption  = f"🎬 <b>{title}{year_str}</b>\n"
+    caption += f"📺 {season_str} · <code>{ep_range}</code>\n"
     if genres:
         caption += f"🎭 {genres}\n"
     if score and str(score) not in ("N/A", "None", ""):
-        caption += f"⭐ MAL Score: **{score}**\n"
-    if episodes and str(episodes) not in ("?", "None", ""):
-        caption += f"📊 Total Episodes: `{episodes}`\n"
+        caption += f"⭐ MAL Score: <b>{score}</b>\n"
+    if episodes_total and str(episodes_total) not in ("?", "None", ""):
+        caption += f"📊 Total Episodes: <code>{episodes_total}</code>\n"
     if studio and studio not in ("N/A", "None", ""):
-        caption += f"🎙 Studio: `{studio}`\n"
-
+        caption += f"🎙 Studio: <code>{studio}</code>\n"
     caption += f"\n🔊 {audio_info}  |  📝 {sub_info}\n"
-
     if overview:
-        caption += f"\n_{overview}_\n"
+        caption += f"\n<i>{overview}</i>\n"
 
-    # ── Quality buttons ───────────────────────────────────────
+    # ── Quality buttons (one per quality, batch link) ─────────
     buttons = []
-    row     = []
-    for quality, qdata in _sorted_qualities(qualities):
-        link = await get_link(qdata["msg_id"])
-        row.append(InlineKeyboardButton(f"📥 {quality}", url=link))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
+    for quality in sorted(quality_links.keys(), key=lambda x: QUALITY_ORDER.index(x) if x in QUALITY_ORDER else 99):
+        link = quality_links[quality]
+        buttons.append([InlineKeyboardButton(
+            f"📥 {quality}  •  {ep_range}",
+            url=link
+        )])
 
     markup = InlineKeyboardMarkup(buttons) if buttons else None
 
@@ -149,19 +208,19 @@ async def post_rich_mode(
         if poster_bytes:
             try:
                 await client.send_photo(
-                    chat_id=channel_id,
-                    photo=io.BytesIO(poster_bytes),
-                    caption=caption,
-                    reply_markup=markup,
+                    chat_id    = channel_id,
+                    photo      = io.BytesIO(poster_bytes),
+                    caption    = caption,
+                    reply_markup = markup,
                 )
                 return
             except Exception as e:
                 logger.warning(f"Poster send failed, falling back to text: {e}")
 
     await client.send_message(
-        chat_id=channel_id,
-        text=caption,
-        reply_markup=markup,
+        chat_id    = channel_id,
+        text       = caption,
+        reply_markup = markup,
     )
 
 
@@ -174,7 +233,7 @@ async def dispatch_post(
     channel_ids: list,
     episodes: list,
     settings: dict,
-    meta: dict | None = None,   # unified meta (replaces old tmdb_meta)
+    meta: dict | None = None,
 ):
     mode       = settings.get("post_mode", "simple")
     sticker_id = settings.get("sticker_id")
@@ -185,12 +244,13 @@ async def dispatch_post(
         if mode == "simple":
             await post_simple_mode(client, ch_id, episodes, sticker_id)
         else:
-            for ep in episodes:
-                await post_rich_mode(client, ch_id, ep, meta, audio_info, sub_info)
-                await asyncio.sleep(0.5)
-            # End-of-season sticker after all episodes
+            await post_rich_mode(client, ch_id, episodes, meta, audio_info, sub_info)
+            # Fix #4 — sticker after season post in rich mode too
             if sticker_id:
                 try:
+                    await asyncio.sleep(0.5)
                     await client.send_sticker(ch_id, sticker_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Sticker send failed: {e}")
+
+        await asyncio.sleep(0.5)
