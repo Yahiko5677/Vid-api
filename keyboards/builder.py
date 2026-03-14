@@ -60,13 +60,13 @@ def channel_picker(channels: list[dict], selected: list[int]) -> InlineKeyboardM
 
 # ─── Upload confirm / edit ───────────────────────────────────────────────
 
-def confirm_upload(title: str, season: int, episode: int, quality: str) -> InlineKeyboardMarkup:
+def confirm_upload(title: str, season: int, episode: int, quality: str, confirm_key: str = "") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm",    callback_data="confirm_upload"),
-            InlineKeyboardButton("✏️ Edit Title", callback_data="edit_title"),
+            InlineKeyboardButton("✅ Confirm",    callback_data=f"confirm_upload:{confirm_key}"),
+            InlineKeyboardButton("✏️ Edit Title", callback_data=f"edit_title:{confirm_key}"),
         ],
-        [InlineKeyboardButton("🗑 Discard",       callback_data="discard_upload")],
+        [InlineKeyboardButton("🗑 Discard",       callback_data=f"discard_upload:{confirm_key}")],
     ])
 
 
