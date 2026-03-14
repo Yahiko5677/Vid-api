@@ -105,7 +105,7 @@ async def post_simple_mode(
         if season > 1:
             label = f"Season {season} \u2022 Episode {episode:02d}"
 
-        await pacing.send(client, channel_id, f"**{label}**")
+        await pacing.send(client, channel_id, f"<b>{label}</b>")
 
         for quality, qdata in _sorted_qualities(qualities):
             if quality not in ch_qualities:
