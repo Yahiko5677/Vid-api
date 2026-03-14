@@ -42,15 +42,16 @@ def _now() -> datetime:
 # ═══════════════════════════════════════════════════════
 
 def save_file(
-    admin_id:  int,
-    title:     str,
-    title_key: str,
-    season:    int,
-    episode:   int,
-    quality:   str,
-    file_id:   str,
-    msg_id:    int,
-    file_name: str,
+    admin_id:     int,
+    title:        str,
+    title_key:    str,
+    season:       int,
+    episode:      int,
+    quality:      str,
+    file_id:      str,
+    msg_id:       int,
+    file_name:    str,
+    from_chat_id: int = 0,   # admin PM chat_id — needed at post time for DB copy
 ) -> dict:
     """Save a quality entry to memory. Returns the updated episode doc."""
 
@@ -71,9 +72,10 @@ def save_file(
     })
 
     ep["qualities"][quality] = {
-        "file_id":   file_id,
-        "msg_id":    msg_id,
-        "file_name": file_name,
+        "file_id":    file_id,
+        "msg_id":     msg_id,
+        "file_name":  file_name,
+        "from_chat_id": from_chat_id,  # admin PM chat for post-time DB copy
     }
     ep["updated_at"] = _now()
     _store[admin_id][title_key][season][episode] = ep
