@@ -21,9 +21,9 @@ from pyrogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
 
-SEND_PAUSE = 1.5
+SEND_PAUSE = 3.0
 EDIT_PAUSE = 0.2
-COPY_PAUSE = 1.0
+COPY_PAUSE = 3.0
 
 
 async def _call(make_coro, pause: float):
