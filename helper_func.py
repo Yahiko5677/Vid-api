@@ -3,9 +3,6 @@ helper_func.py
 
 encode / decode — 100% compatible with your existing File Store Bot.
 Filename parsers — quality, episode, title extraction.
-
-Note: get_link / get_batch_link were removed — post.py handles link
-generation directly using per-quality bot+channel from /settings.
 """
 
 import base64
@@ -68,13 +65,24 @@ def parse_episode(filename: str):
 
 
 def parse_title(filename: str) -> str:
-    """Best-effort title extraction from filename."""
-    name = re.sub(r'\.\w{2,4}$', '', filename)
+    """
+    Best-effort title extraction from filename.
+
+    Handles channel-tagged filenames like:
+      [@Vertex_Anime] Fairy Tail S02E07 480p.mkv
+      [SubsPlease] Attack on Titan S04E28 [1080p].mkv
+      Fairy.Tail.S02E07.480p.mkv
+    """
+    name = re.sub(r'\.\w{2,4}$', '', filename)          # remove extension
+    name = re.sub(r'^\s*\[[^\]]*\]\s*', '', name)        # strip leading [tag] e.g. [@Vertex_Anime]
     name = re.sub(
-        r'[Ss]\d{1,2}[Ee]\d{1,3}.*|[Ss]eason\s*\d+.*|[Ee]p?\d+.*|'
-        r'2160p?|4[Kk]|[Uu][Hh][Dd]|1080p?|720p?|480p?|360p?|'
-        r'BluRay|WEB-?DL|HDRip|HEVC|x264|x265|10bit|AAC|DD5\.1|'
-        r'\[\w+\]|\(\w+\)',
+        r'[Ss]\d{1,2}[Ee]\d{1,3}.*'                     # S01E01 and everything after
+        r'|[Ss]eason\s*\d+.*'
+        r'|[Ee]p?\d+.*'
+        r'|2160p?|4[Kk]|[Uu][Hh][Dd]|1080p?|720p?|480p?|360p?'
+        r'|BluRay|WEB-?DL|HDRip|HEVC|x264|x265|10bit|AAC|DD5\.1'
+        r'|\[[^\]]*\]'                                   # any remaining [..] blocks
+        r'|\([^\)]*\)',                                  # any (..) blocks
         '', name, flags=re.IGNORECASE
     )
     name = re.sub(r'[\._\-]+', ' ', name).strip()
