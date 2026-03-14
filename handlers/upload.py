@@ -120,32 +120,15 @@ def _record_failed(admin_id: int, label: str):
 # ─────────────────────────────────────────────────────────────
 
 async def _store_file(client: Client, chat_id: int, data: dict, title: str, title_key: str):
-    from database.db import get_settings
+    """
+    Save file reference to memory only.
+    DB channel copy happens at post time — this avoids double-copying
+    and keeps simple mode from unnecessarily writing to DB channel.
+    msg_id stored here = original message ID in admin PM.
+    """
     admin_id = data["admin_id"]
     ep_str   = f"S{data['season']:02d}E{data['episode']:02d}"
     label    = f"{title} {ep_str} {data['quality']}"
-
-    admin_settings = await get_settings(admin_id)
-    qb             = admin_settings.get("quality_bots", {}).get(data["quality"], {})
-    db_channel     = qb.get("channel", 0)
-
-    if not db_channel:
-        _record_failed(admin_id, f"{label} — no File Store Bot set")
-        return
-
-    try:
-        stored = await pacing.copy_message(
-            client,
-            chat_id              = db_channel,
-            from_chat_id         = data["from_chat_id"],
-            message_id           = data["msg_id"],
-            disable_notification = True,
-        )
-        real_msg_id = stored.id
-    except Exception as e:
-        logger.error(f"Failed to copy {label}: {e}")
-        _record_failed(admin_id, f"{label} — {e}")
-        return
 
     ep = save_file(
         admin_id  = admin_id,
@@ -155,8 +138,9 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
         episode   = data["episode"],
         quality   = data["quality"],
         file_id   = data["file_id"],
-        msg_id    = real_msg_id,
+        msg_id    = data["msg_id"],          # admin PM msg_id — copied to DB at post time
         file_name = data["file_name"],
+        from_chat_id = data["from_chat_id"], # admin PM chat — needed at post time
     )
 
     have    = list(ep["qualities"].keys())
