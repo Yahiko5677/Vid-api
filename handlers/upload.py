@@ -60,7 +60,7 @@ def clear_title_cache(admin_id: int, title_key: str):
 # ─────────────────────────────────────────────────────────────
 
 async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
-    """Wait for debounce window, then send one summary message."""
+    """Wait for debounce window, then send one summary message + sticker."""
     await asyncio.sleep(DEBOUNCE_SECONDS)
     state = _debounce.pop(admin_id, {})
     saved  = state.get("saved", [])
@@ -70,7 +70,7 @@ async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
         return
 
     lines = [f"📦 <b>Batch complete — {len(saved)} file(s) queued/saved</b>\n"]
-    for s in saved[:20]:   # cap at 20 lines
+    for s in saved[:20]:
         lines.append(f"  ✅ <code>{s}</code>")
     if len(saved) > 20:
         lines.append(f"  ... and {len(saved)-20} more")
@@ -81,6 +81,16 @@ async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
         await pacing.send(client, chat_id, "\n".join(lines))
     except Exception as e:
         logger.warning(f"Summary send failed: {e}")
+
+    # Send sticker in admin PM as visual batch-complete indicator
+    from database.db import settings_col
+    s       = await settings_col.find_one({"admin_id": admin_id}) or {}
+    sticker = s.get("sticker_id")
+    if sticker:
+        try:
+            await pacing.send_sticker(client, chat_id, sticker)
+        except Exception as e:
+            logger.warning(f"Admin PM sticker failed: {e}")
 
 
 def _schedule_summary(client: Client, admin_id: int, chat_id: int):
