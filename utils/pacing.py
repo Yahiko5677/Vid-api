@@ -1,22 +1,15 @@
 """
 utils/pacing.py — Thin wrappers around Telegram API calls.
 
-Adds automatic sleep after every call to avoid FloodWait and keep the bot safe.
+Adds automatic sleep + FloodWait retry after every call.
+
+KEY FIX: All wrappers use lambda factories so each retry creates
+a FRESH coroutine — avoids "cannot reuse already awaited coroutine".
 
 Delays:
-    SEND_PAUSE   = 0.3s  — after send_message / reply / send_photo / send_sticker
-    EDIT_PAUSE   = 0.2s  — after edit_text / edit_reply_markup (lighter)
-    COPY_PAUSE   = 0.1s  — after copy_message (bulk ops use this)
-
-Usage:
-    from utils.pacing import send, reply, edit, edit_markup, send_photo, send_sticker
-
-    await send(client, chat_id, "Hello")
-    await reply(message, "Got it!")
-    await edit(cb.message, "Updated!")
-    await edit_markup(cb.message, keyboard)
-    await send_photo(client, chat_id, photo=bytes, caption="...")
-    await send_sticker(client, chat_id, sticker_id)
+    SEND_PAUSE = 0.3s  — send / reply / photo / sticker
+    EDIT_PAUSE = 0.2s  — edit_text / edit_reply_markup
+    COPY_PAUSE = 0.1s  — copy_message
 """
 
 import asyncio
@@ -28,16 +21,22 @@ from pyrogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
 
-SEND_PAUSE  = 0.3   # send / reply / photo / sticker
-EDIT_PAUSE  = 0.2   # edit_text / edit_reply_markup
-COPY_PAUSE  = 0.1   # copy_message (set directly in upload/post)
+SEND_PAUSE = 0.3
+EDIT_PAUSE = 0.2
+COPY_PAUSE = 0.1
 
 
-async def _call(coro, pause: float):
-    """Execute a Telegram API coroutine with FloodWait retry + pacing sleep."""
+async def _call(make_coro, pause: float):
+    """
+    Execute a Telegram API call with FloodWait retry + pacing sleep.
+
+    IMPORTANT: accepts a FACTORY (lambda/callable), not a coroutine.
+    This allows creating a fresh coroutine on each retry attempt.
+    Passing a coroutine directly causes 'cannot reuse already awaited coroutine'.
+    """
     for attempt in range(5):
         try:
-            result = await coro
+            result = await make_coro()   # fresh coroutine each attempt
             await asyncio.sleep(pause)
             return result
         except FloodWait as e:
@@ -60,7 +59,7 @@ async def send(
     disable_web_page_preview: bool = True,
 ):
     return await _call(
-        client.send_message(
+        lambda: client.send_message(
             chat_id                  = chat_id,
             text                     = text,
             reply_markup             = reply_markup,
@@ -79,7 +78,7 @@ async def reply(
     quote: bool = True,
 ):
     return await _call(
-        message.reply(
+        lambda: message.reply(
             text         = text,
             reply_markup = reply_markup,
             parse_mode   = parse_mode,
@@ -96,7 +95,7 @@ async def edit(
     parse_mode=ParseMode.HTML,
 ):
     return await _call(
-        message.edit_text(
+        lambda: message.edit_text(
             text         = text,
             reply_markup = reply_markup,
             parse_mode   = parse_mode,
@@ -110,7 +109,7 @@ async def edit_markup(
     reply_markup: InlineKeyboardMarkup,
 ):
     return await _call(
-        message.edit_reply_markup(reply_markup=reply_markup),
+        lambda: message.edit_reply_markup(reply_markup=reply_markup),
         EDIT_PAUSE,
     )
 
@@ -124,7 +123,7 @@ async def send_photo(
     parse_mode=ParseMode.HTML,
 ):
     return await _call(
-        client.send_photo(
+        lambda: client.send_photo(
             chat_id      = chat_id,
             photo        = photo,
             caption      = caption,
@@ -141,7 +140,7 @@ async def send_sticker(
     sticker: str,
 ):
     return await _call(
-        client.send_sticker(chat_id=chat_id, sticker=sticker),
+        lambda: client.send_sticker(chat_id=chat_id, sticker=sticker),
         SEND_PAUSE,
     )
 
@@ -154,20 +153,12 @@ async def copy_message(
     disable_notification: bool = True,
 ):
     """copy_message with FloodWait retry + 0.1s pacing."""
-    for attempt in range(5):
-        try:
-            result = await client.copy_message(
-                chat_id              = chat_id,
-                from_chat_id         = from_chat_id,
-                message_id           = message_id,
-                disable_notification = disable_notification,
-            )
-            await asyncio.sleep(COPY_PAUSE)
-            return result
-        except FloodWait as e:
-            wait = e.value + 2
-            logger.warning(f"FloodWait {wait}s on copy_message — waiting...")
-            await asyncio.sleep(wait)
-        except Exception as e:
-            raise e
-    raise RuntimeError("copy_message failed after 5 retries")
+    return await _call(
+        lambda: client.copy_message(
+            chat_id              = chat_id,
+            from_chat_id         = from_chat_id,
+            message_id           = message_id,
+            disable_notification = disable_notification,
+        ),
+        COPY_PAUSE,
+    )
