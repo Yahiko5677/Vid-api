@@ -9,7 +9,7 @@ a FRESH coroutine — avoids "cannot reuse already awaited coroutine".
 Delays:
     SEND_PAUSE = 0.3s  — send / reply / photo / sticker
     EDIT_PAUSE = 0.2s  — edit_text / edit_reply_markup
-    COPY_PAUSE = 0.1s  — copy_message
+    COPY_PAUSE = 2.0s  — copy_message
 """
 
 import asyncio
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 SEND_PAUSE = 0.3
 EDIT_PAUSE = 0.2
-COPY_PAUSE = 0.1
+COPY_PAUSE = 1.0
 
 
 async def _call(make_coro, pause: float):
