@@ -18,52 +18,113 @@ _admin_filter = filters.private & filters.user(ADMINS)
 
 # ── Stores ────────────────────────────────────────────────────────────────
 _pending_confirm: dict[str, dict]    = {}
+
+# Title cache keyed by (admin_id, title_key, season) — season-aware
+# { admin_id: { "title_key_s01": "Fairy Tail", "title_key_s02": "Fairy Tail" } }
 _title_cache: dict[int, dict]        = {}
+
+# Queue: (admin_id, season_title_key) → [keys...]
 _waiting_for_title: dict[tuple, list] = {}
+
+# Debounce: accumulate files per admin, send summary after idle
+# { admin_id: {"task": asyncio.Task, "saved": [], "failed": []} }
+_debounce: dict[int, dict] = {}
+
+DEBOUNCE_SECONDS = 3.0   # wait this long after last file before sending summary
+
+
+def _make_title_key(title: str, season: int) -> str:
+    """Season-aware key — S01 and S02 are separate groups."""
+    base = re.sub(r'\W+', '_', title.lower()).strip("_")
+    return f"{base}_s{season:02d}"
 
 
 def get_cached_title(admin_id: int, title_key: str) -> str | None:
     return _title_cache.get(admin_id, {}).get(title_key)
 
+
 def cache_title(admin_id: int, title_key: str, title: str):
     _title_cache.setdefault(admin_id, {})[title_key] = title
 
-def clear_title_cache(admin_id: int, title_key: str):
-    _title_cache.get(admin_id, {}).pop(title_key, None)
 
-def _make_title_key(title: str) -> str:
-    return re.sub(r'\W+', '_', title.lower()).strip("_")
+def clear_title_cache(admin_id: int, title_key: str):
+    """Strip season suffix to clear all seasons of a title after posting."""
+    base_key = re.sub(r'_s\d{2}$', '', title_key)
+    to_remove = [k for k in _title_cache.get(admin_id, {}) if k.startswith(base_key)]
+    for k in to_remove:
+        _title_cache.get(admin_id, {}).pop(k, None)
 
 
 # ─────────────────────────────────────────────────────────────
-#  Store file — copy into quality's DB channel from /settings
+#  Debounce summary — fires 3s after last file of a batch
+# ─────────────────────────────────────────────────────────────
+
+async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
+    """Wait for debounce window, then send one summary message."""
+    await asyncio.sleep(DEBOUNCE_SECONDS)
+    state = _debounce.pop(admin_id, {})
+    saved  = state.get("saved", [])
+    failed = state.get("failed", [])
+
+    if not saved and not failed:
+        return
+
+    lines = [f"📦 <b>Batch complete — {len(saved)} file(s) queued/saved</b>\n"]
+    for s in saved[:20]:   # cap at 20 lines
+        lines.append(f"  ✅ <code>{s}</code>")
+    if len(saved) > 20:
+        lines.append(f"  ... and {len(saved)-20} more")
+    for f in failed:
+        lines.append(f"  ❌ <code>{f}</code>")
+
+    try:
+        await pacing.send(client, chat_id, "\n".join(lines))
+    except Exception as e:
+        logger.warning(f"Summary send failed: {e}")
+
+
+def _schedule_summary(client: Client, admin_id: int, chat_id: int):
+    """Cancel existing debounce task and reschedule."""
+    existing = _debounce.get(admin_id, {}).get("task")
+    if existing and not existing.done():
+        existing.cancel()
+    _debounce.setdefault(admin_id, {"saved": [], "failed": [], "task": None})
+    task = asyncio.get_running_loop().create_task(
+        _send_batch_summary(client, admin_id, chat_id)
+    )
+    _debounce[admin_id]["task"] = task
+
+
+def _record_saved(admin_id: int, label: str):
+    _debounce.setdefault(admin_id, {"saved": [], "failed": [], "task": None})
+    _debounce[admin_id]["saved"].append(label)
+
+
+def _record_failed(admin_id: int, label: str):
+    _debounce.setdefault(admin_id, {"saved": [], "failed": [], "task": None})
+    _debounce[admin_id]["failed"].append(label)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Store file — copy to quality's DB channel, save to memory
 # ─────────────────────────────────────────────────────────────
 
 async def _store_file(client: Client, chat_id: int, data: dict, title: str, title_key: str):
-    """
-    Copy file into the DB channel configured for this quality in /settings → 🤖 File Store Bots.
-    real_msg_id (from DB channel) is stored in memory — used to generate File Store Bot links.
-    """
     from database.db import get_settings
     admin_id = data["admin_id"]
     ep_str   = f"S{data['season']:02d}E{data['episode']:02d}"
+    label    = f"{title} {ep_str} {data['quality']}"
 
-    # Lookup DB channel for this quality from admin's quality_bots settings
     admin_settings = await get_settings(admin_id)
     qb             = admin_settings.get("quality_bots", {}).get(data["quality"], {})
     db_channel     = qb.get("channel", 0)
 
     if not db_channel:
-        await pacing.send(
-            client, chat_id,
-            f"❌ No File Store Bot set for <code>{data['quality']}</code>\n"
-            f"Go to /settings → 🤖 File Store Bots and configure it first."
-        )
+        _record_failed(admin_id, f"{label} — no File Store Bot set")
         return
 
-    # pacing.copy_message handles FloodWait retry + 0.1s pacing internally
     try:
-        stored      = await pacing.copy_message(
+        stored = await pacing.copy_message(
             client,
             chat_id              = db_channel,
             from_chat_id         = data["from_chat_id"],
@@ -72,10 +133,8 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
         )
         real_msg_id = stored.id
     except Exception as e:
-        logger.error(f"Failed to copy {data['quality']} to DB channel: {e}")
-        await pacing.send(client, chat_id,
-            f"❌ Failed to store <code>{data['file_name']}</code>:\n<code>{e}</code>"
-        )
+        logger.error(f"Failed to copy {label}: {e}")
+        _record_failed(admin_id, f"{label} — {e}")
         return
 
     ep = save_file(
@@ -94,10 +153,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
     missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
 
     if missing:
-        await pacing.send(client, chat_id,
-            f"✅ <b>Saved</b> <code>{title} {ep_str} {data['quality']}</code>\n"
-            f"⏳ Missing: <code>{', '.join(missing)}</code>"
-        )
+        _record_saved(admin_id, f"{label} ⏳ missing: {', '.join(missing)}")
     else:
         from memory_store import get_season_episodes
         all_eps  = get_season_episodes(admin_id, title_key, data["season"])
@@ -106,15 +162,18 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             for e in all_eps
         )
         if all_done and len(all_eps) > 1:
-            await pacing.send(client, chat_id,
-                f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>\n\n"
-                f"🎉 <b>Full season ready!</b> {len(all_eps)} episodes — post whole season?",
-                reply_markup=force_post_keyboard(title_key, data["season"]),
-            )
+            _record_saved(admin_id, f"{label} ✅ all ready — S{data['season']:02d} complete!")
+            # Send force-post button immediately (outside debounce)
+            try:
+                await pacing.send(client, chat_id,
+                    f"🎉 <b>Season {data['season']:02d} complete!</b> <code>{title}</code>\n"
+                    f"{len(all_eps)} episodes ready to post:",
+                    reply_markup=force_post_keyboard(title_key, data["season"]),
+                )
+            except Exception:
+                pass
         else:
-            await pacing.send(client, chat_id,
-                f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>"
-            )
+            _record_saved(admin_id, f"{label} ✅")
 
     from database.db import settings_col
     s      = await settings_col.find_one({"admin_id": admin_id}) or {}
@@ -123,7 +182,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
 
 
 # ─────────────────────────────────────────────────────────────
-#  Receive video
+#  Receive video — silent accumulation with debounce summary
 # ─────────────────────────────────────────────────────────────
 
 @Client.on_message(_admin_filter & (filters.document | filters.video))
@@ -143,7 +202,8 @@ async def on_video_upload(client: Client, message: Message):
     season          = season  or 1
     episode         = episode or 1
     raw_title       = parse_title(file_name)
-    title_key       = _make_title_key(raw_title)
+    # Season-aware key — S01 and S02 are separate groups
+    title_key       = _make_title_key(raw_title, season)
     key             = uuid.uuid4().hex[:8]
     ep_str          = f"S{season:02d}E{episode:02d}"
 
@@ -162,13 +222,12 @@ async def on_video_upload(client: Client, message: Message):
         "editing_title": False,
     }
 
-    # ── Title already confirmed → auto-save ──────────────────
+    # Always reschedule debounce — resets 3s window on each new file
+    _schedule_summary(client, admin_id, message.chat.id)
+
+    # ── Title cached → auto-save silently ────────────────────
     cached = get_cached_title(admin_id, title_key)
     if cached:
-        await pacing.reply(message,
-            f"📥 <code>{cached} {ep_str} {quality}</code> — auto-saving...",
-            quote=True,
-        )
         await _store_file(client, message.chat.id, data, cached, title_key)
         from database.db import settings_col
         s      = await settings_col.find_one({"admin_id": admin_id}) or {}
@@ -176,24 +235,21 @@ async def on_video_upload(client: Client, message: Message):
         await log_file_received(client, admin_id, cached, quality, ep_str, log_ch)
         return
 
-    # ── New title_key — queue and ask once ────────────────────
+    # ── New title_key — hold and ask once ────────────────────
     _pending_confirm[key] = data
     group_key      = (admin_id, title_key)
     already_asking = group_key in _waiting_for_title
     _waiting_for_title.setdefault(group_key, []).append(key)
 
-    if already_asking:
-        await pacing.reply(message,
-            f"⏳ <code>{ep_str} {quality}</code> queued — waiting for title confirm.",
-            quote=True,
-        )
-    else:
+    if not already_asking:
+        # Only send confirm for FIRST file of this title+season
         await pacing.reply(message,
             f"📁 <b>New title detected</b>\n\n"
             f"📌 Title   : <code>{raw_title}</code>\n"
+            f"📺 Season  : <code>S{season:02d}</code>\n"
             f"📺 Episode : <code>{ep_str}</code>\n"
             f"🎞 Quality : <code>{quality}</code>\n\n"
-            f"Confirm title for <b>all queued files</b>:",
+            f"Confirm title for all <b>S{season:02d}</b> files:",
             reply_markup=confirm_upload(raw_title, season, episode, quality, key),
             quote=True,
         )
@@ -225,19 +281,20 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
     queued_keys = _waiting_for_title.pop(group_key, [key])
 
     await pacing.edit(cb.message,
-        f"✅ <b>Title confirmed:</b> <code>{title}</code>\n"
+        f"✅ <b>Title confirmed:</b> <code>{title} S{data['season']:02d}</code>\n"
         f"⏳ Saving {len(queued_keys)} file(s)..."
     )
-    await cb.answer("Saving all queued files...")
+    await cb.answer("Saving...")
 
+    # Process all queued files for this title+season
     for qkey in queued_keys:
         qdata = _pending_confirm.pop(qkey, None)
         if qdata:
             await _store_file(client, chat_id, qdata, title, title_key)
 
     await pacing.edit(cb.message,
-        f"✅ <b>{title}</b> — {len(queued_keys)} file(s) saved.\n"
-        f"Title remembered until next post."
+        f"✅ <b>{title} S{data['season']:02d}</b> — {len(queued_keys)} file(s) saved.\n"
+        f"Title remembered for this season."
     )
 
 
@@ -256,7 +313,7 @@ async def cb_edit_title(client: Client, cb: CallbackQuery):
     queued_count = len(_waiting_for_title.get(group_key, [key]))
     await pacing.edit(cb.message,
         f"✏️ Send the <b>corrected title</b>\n"
-        f"Will apply to all <b>{queued_count}</b> queued file(s):"
+        f"Applies to all <b>{queued_count}</b> queued S{data['season']:02d} file(s):"
     )
     await cb.answer()
 
@@ -276,13 +333,15 @@ async def on_title_edit_reply(client: Client, message: Message):
     if not editing:
         return
 
-    new_title     = message.text.strip()
-    new_title_key = _make_title_key(new_title)
+    new_title = message.text.strip()
 
     for key, data in editing:
-        old_group = (admin_id, data["title_key"])
-        new_group = (admin_id, new_title_key)
-        queued    = _waiting_for_title.pop(old_group, [])
+        season        = data["season"]
+        new_title_key = _make_title_key(new_title, season)
+        old_group     = (admin_id, data["title_key"])
+        new_group     = (admin_id, new_title_key)
+
+        queued = _waiting_for_title.pop(old_group, [])
         _waiting_for_title[new_group] = queued
         for qkey in queued:
             if qkey in _pending_confirm:
@@ -291,11 +350,11 @@ async def on_title_edit_reply(client: Client, message: Message):
         data["raw_title"]     = new_title
         data["title_key"]     = new_title_key
         data["editing_title"] = False
-        ep_str = f"S{data['season']:02d}E{data['episode']:02d}"
+
         await pacing.reply(message,
-            f"✅ Title set to: <code>{new_title}</code>\n\n"
-            f"Confirm for all <b>{len(queued)}</b> queued file(s)?",
-            reply_markup=confirm_upload(new_title, data["season"], data["episode"], data["quality"], key),
+            f"✅ Title set: <code>{new_title}</code>\n"
+            f"Confirm for all <b>{len(queued)}</b> S{season:02d} file(s)?",
+            reply_markup=confirm_upload(new_title, season, data["episode"], data["quality"], key),
         )
 
 
