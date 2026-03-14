@@ -3,6 +3,7 @@ import uuid
 import asyncio
 import logging
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait
 from pyrogram.types import Message, CallbackQuery
 
 from config import ADMINS, FILE_STORE_CHANNEL
@@ -53,20 +54,31 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
     admin_id = data["admin_id"]
     ep_str   = f"S{data['season']:02d}E{data['episode']:02d}"
 
-    try:
-        stored = await client.copy_message(
-            chat_id             = FILE_STORE_CHANNEL,
-            from_chat_id        = data["from_chat_id"],
-            message_id          = data["msg_id"],
-            disable_notification= True,
-        )
-        real_msg_id = stored.id
-    except Exception as e:
-        logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
-        await client.send_message(
-            chat_id,
-            f"❌ Failed to store <code>{data['file_name']}</code>:\n<code>{e}</code>"
-        )
+    # Retry loop — handles FloodWait automatically
+    for attempt in range(5):
+        try:
+            stored = await client.copy_message(
+                chat_id             = FILE_STORE_CHANNEL,
+                from_chat_id        = data["from_chat_id"],
+                message_id          = data["msg_id"],
+                disable_notification= True,
+            )
+            real_msg_id = stored.id
+            await asyncio.sleep(0.1)
+            break
+        except FloodWait as e:
+            wait = e.value + 2
+            logger.warning(f"FloodWait {wait}s on copy — waiting...")
+            await asyncio.sleep(wait)
+        except Exception as e:
+            logger.error(f"Failed to copy to FILE_STORE_CHANNEL: {e}")
+            await client.send_message(
+                chat_id,
+                f"❌ Failed to store <code>{data['file_name']}</code>:\n<code>{e}</code>"
+            )
+            return
+    else:
+        await client.send_message(chat_id, f"❌ Failed after 5 retries: <code>{data['file_name']}</code>")
         return
 
     ep = save_file(
@@ -91,11 +103,25 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             f"⏳ Missing: <code>{', '.join(missing)}</code>"
         )
     else:
-        await client.send_message(
-            chat_id,
-            f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>",
-            reply_markup=force_post_keyboard(title_key, data["season"]),
+        # All qualities ready for this episode — check if whole season is done
+        from memory_store import get_season_episodes
+        all_eps  = get_season_episodes(data["admin_id"], title_key, data["season"])
+        all_done = all(
+            not [q for q in ["480p","720p","1080p"] if q not in list(e.get("qualities",{}).keys())]
+            for e in all_eps
         )
+        if all_done and len(all_eps) > 1:
+            await client.send_message(
+                chat_id,
+                f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>\n\n"
+                f"🎉 <b>Full season ready!</b> {len(all_eps)} episodes — post the whole season at once?",
+                reply_markup=force_post_keyboard(title_key, data["season"]),
+            )
+        else:
+            await client.send_message(
+                chat_id,
+                f"✅ <b>All qualities ready!</b> <code>{title} {ep_str}</code>",
+            )
 
     from database.db import settings_col
     s      = await settings_col.find_one({"admin_id": admin_id}) or {}
