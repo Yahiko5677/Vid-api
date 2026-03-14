@@ -24,6 +24,7 @@ import asyncio
 import logging
 import io
 from pyrogram import Client
+from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helper_func import get_batch_link
 from services.tmdb import download_poster
@@ -118,17 +119,24 @@ async def _build_quality_batch_links(
             qdata = ep.get("qualities", {}).get(quality)
             if not qdata:
                 continue
-            try:
-                sent = await client.copy_message(
-                    chat_id             = FILE_STORE_CHANNEL,
-                    from_chat_id        = FILE_STORE_CHANNEL,
-                    message_id          = qdata["msg_id"],
-                    disable_notification= True,
-                )
-                msg_ids.append(sent.id)
-                await asyncio.sleep(0.3)
-            except Exception as e:
-                logger.error(f"Batch copy failed {quality} ep{ep['episode']}: {e}")
+            for attempt in range(5):
+                try:
+                    sent = await client.copy_message(
+                        chat_id             = FILE_STORE_CHANNEL,
+                        from_chat_id        = FILE_STORE_CHANNEL,
+                        message_id          = qdata["msg_id"],
+                        disable_notification= True,
+                    )
+                    msg_ids.append(sent.id)
+                    await asyncio.sleep(0.1)
+                    break
+                except FloodWait as e:
+                    wait = e.value + 2
+                    logger.warning(f"FloodWait {wait}s on batch copy — waiting...")
+                    await asyncio.sleep(wait)
+                except Exception as e:
+                    logger.error(f"Batch copy failed {quality} ep{ep['episode']}: {e}")
+                    break
 
         if len(msg_ids) >= 2:
             link = await get_batch_link(msg_ids[0], msg_ids[-1])
