@@ -26,6 +26,9 @@ _title_cache: dict[int, dict]        = {}
 # Queue: (admin_id, season_title_key) → [keys...]
 _waiting_for_title: dict[tuple, list] = {}
 
+# Track seasons already notified as complete — avoids repeated notices
+_season_complete_notified: set = set()
+
 # Debounce: accumulate files per admin, send summary after idle
 # { admin_id: {"task": asyncio.Task, "saved": [], "failed": []} }
 _debounce: dict[int, dict] = {}
