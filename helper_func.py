@@ -1,19 +1,15 @@
 """
-encode / decode logic — 100% compatible with your existing File Store Bot.
+helper_func.py
 
-Encode:  string  → base64url  (used when generating share links)
-Decode:  base64url → string   (used on /start deep-link)
+encode / decode — 100% compatible with your existing File Store Bot.
+Filename parsers — quality, episode, title extraction.
 
-Link format:
-    Single file : get-{msg_id * abs(channel_id)}
-    Batch range : get-{start * abs(channel_id)}-{end * abs(channel_id)}
-
-Share link   : https://t.me/{FILE_STORE_BOT}?start={base64_string}
+Note: get_link / get_batch_link were removed — post.py handles link
+generation directly using per-quality bot+channel from /settings.
 """
 
 import base64
 import re
-from config import FILE_STORE_BOT, FILE_STORE_CHANNEL
 
 
 # ── Core encode / decode ─────────────────────────────────────────────────
@@ -26,28 +22,11 @@ async def encode(string: str) -> str:
 
 async def decode(base64_string: str) -> str:
     base64_string = base64_string.strip("=")
-    # Pad to multiple of 4
     padding = 4 - len(base64_string) % 4
     if padding != 4:
         base64_string += "=" * padding
     base64_bytes = base64_string.encode("ascii")
     return base64.urlsafe_b64decode(base64_bytes).decode("ascii")
-
-
-# ── Link generators (compatible with File Store Bot) ─────────────────────
-
-async def get_link(msg_id: int) -> str:
-    """Single-file share link."""
-    string = f"get-{msg_id * abs(FILE_STORE_CHANNEL)}"
-    b64    = await encode(string)
-    return f"https://t.me/{FILE_STORE_BOT}?start={b64}"
-
-
-async def get_batch_link(start_id: int, end_id: int) -> str:
-    """Batch-range share link."""
-    string = f"get-{start_id * abs(FILE_STORE_CHANNEL)}-{end_id * abs(FILE_STORE_CHANNEL)}"
-    b64    = await encode(string)
-    return f"https://t.me/{FILE_STORE_BOT}?start={b64}"
 
 
 # ── Filename parsers ─────────────────────────────────────────────────────
@@ -61,10 +40,10 @@ QUALITY_PATTERNS = [
 ]
 
 EPISODE_PATTERNS = [
-    r'[Ss](\d{1,2})[Ee](\d{1,3})',           # S01E01
-    r'[Ss]eason\s*(\d{1,2}).*[Ee]p?\s*(\d{1,3})',  # Season 1 Ep 1
-    r'[Ee]p?isode\s*(\d{1,3})',              # Episode 01 (no season)
-    r'[Ee](\d{1,3})',                         # E01
+    r'[Ss](\d{1,2})[Ee](\d{1,3})',
+    r'[Ss]eason\s*(\d{1,2}).*[Ee]p?\s*(\d{1,3})',
+    r'[Ee]p?isode\s*(\d{1,3})',
+    r'[Ee](\d{1,3})',
 ]
 
 
@@ -89,11 +68,8 @@ def parse_episode(filename: str):
 
 
 def parse_title(filename: str) -> str:
-    """
-    Best-effort title extraction.
-    Strips quality tags, episode markers, year, extension, dots/underscores.
-    """
-    name = re.sub(r'\.\w{2,4}$', '', filename)          # remove extension
+    """Best-effort title extraction from filename."""
+    name = re.sub(r'\.\w{2,4}$', '', filename)
     name = re.sub(
         r'[Ss]\d{1,2}[Ee]\d{1,3}.*|[Ss]eason\s*\d+.*|[Ee]p?\d+.*|'
         r'2160p?|4[Kk]|[Uu][Hh][Dd]|1080p?|720p?|480p?|360p?|'
@@ -102,7 +78,6 @@ def parse_title(filename: str) -> str:
         '', name, flags=re.IGNORECASE
     )
     name = re.sub(r'[\._\-]+', ' ', name).strip()
-    # Remove trailing year like (2024) or .2024.
     name = re.sub(r'\s*[\(\[]?\d{4}[\)\]]?\s*$', '', name).strip()
     return name.title() if name else filename
 
