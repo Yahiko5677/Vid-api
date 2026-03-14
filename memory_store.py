@@ -128,6 +128,30 @@ def count_pending(admin_id: int) -> int:
     return len(get_all_pending(admin_id))
 
 
+def clear_all_pending(admin_id: int) -> int:
+    """Clear ALL pending episodes for admin from memory. Returns count cleared."""
+    count = count_pending(admin_id)
+    _store.pop(admin_id, None)
+    asyncio.get_running_loop().create_task(_db_clear_all(admin_id))
+    return count
+
+
+def clear_pending_season(admin_id: int, title_key: str, season: int) -> int:
+    """Clear one season from memory. Returns count cleared."""
+    eps   = get_season_episodes(admin_id, title_key, season)
+    count = len(eps)
+    try:
+        del _store[admin_id][title_key][season]
+        if not _store[admin_id][title_key]:
+            del _store[admin_id][title_key]
+        if not _store[admin_id]:
+            del _store[admin_id]
+    except KeyError:
+        pass
+    asyncio.get_running_loop().create_task(_db_clear_season(admin_id, title_key, season))
+    return count
+
+
 # ═══════════════════════════════════════════════════════
 #  REMOVE
 # ═══════════════════════════════════════════════════════
@@ -195,6 +219,20 @@ async def _db_upsert(ep: dict):
         )
     except Exception as ex:
         logger.debug(f"DB sync write failed (memory still ok): {ex}")
+
+
+async def _db_clear_all(admin_id: int):
+    try:
+        await _get_col().delete_many({"admin_id": admin_id, "status": "pending"})
+    except Exception as ex:
+        logger.debug(f"DB clear all failed: {ex}")
+
+
+async def _db_clear_season(admin_id: int, title_key: str, season: int):
+    try:
+        await _get_col().delete_many({"admin_id": admin_id, "title_key": title_key, "season": season})
+    except Exception as ex:
+        logger.debug(f"DB clear season failed: {ex}")
 
 
 async def _db_delete(admin_id: int, title_key: str, season: int, episode: int):
