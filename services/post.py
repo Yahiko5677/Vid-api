@@ -144,6 +144,7 @@ async def _build_quality_batch_links(
     ch_qualities: list,
     quality_bots: dict,
     sticker_id: str | None = None,
+    notify_chat_id: int | None = None,   # admin chat to notify on sticker errors
 ) -> dict[str, str]:
     """
     For each quality assigned to this channel:
@@ -195,6 +196,15 @@ async def _build_quality_batch_links(
                 logger.info(f"🎴 Sticker sent to DB channel for {quality}")
             except Exception as e:
                 logger.warning(f"Sticker to DB channel failed for {quality}: {e}")
+                # Surface error — bot may not have send permission in DB channel
+                if notify_chat_id:
+                    try:
+                        await pacing.send(client, notify_chat_id,
+                            f"⚠️ Sticker failed for <code>{quality}</code> DB channel\n"
+                            f"Make sure bot is admin in that channel.\n<code>{e}</code>"
+                        )
+                    except Exception:
+                        pass
 
     return quality_links
 
@@ -230,7 +240,7 @@ async def post_rich_mode(
         logger.error(f"Caption render error: {e}")
 
     # Batch links
-    quality_links = await _build_quality_batch_links(client, episodes, ch_qualities, q_bots, sticker)
+    quality_links = await _build_quality_batch_links(client, episodes, ch_qualities, q_bots, sticker, notify_chat_id=channel_id)
 
     # Buttons
     from keyboards import quality_buttons
