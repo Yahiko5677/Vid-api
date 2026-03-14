@@ -30,6 +30,16 @@ MAX_BUFFER = 50
 #  Core logger
 # ═══════════════════════════════════════════════════════
 
+# Events sent to log channel (others only go to memory buffer)
+_CHANNEL_EVENTS = {
+    "🚀 POST TRIGGERED",
+    "📢 POST SUCCESS",
+    "❌ POST FAILED",
+    "⚙️ SETTINGS CHANGED",
+    "🔄 BOT STARTED",
+}
+
+
 async def log_event(
     client: Client,
     admin_id: int,
@@ -38,14 +48,16 @@ async def log_event(
     log_channel_id: int | None = None,
 ):
     """
-    Log an event to:
-      1. In-memory buffer (always)
-      2. Log channel (if configured)
+    Log an event.
+    - Always writes to in-memory buffer.
+    - Only sends to log channel for important events (not per-file).
+      Per-file events (FILE_RECEIVED, FILE_CONFIRMED) are buffer-only
+      to avoid FloodWait when processing 70-100 files.
     """
-    now     = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    entry   = {"time": now, "event": event, "details": details}
+    now   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    entry = {"time": now, "event": event, "details": details}
 
-    # ── 1. Memory buffer ─────────────────────────────────
+    # ── 1. Memory buffer (always) ─────────────────────────
     buf = _log_buffer.setdefault(admin_id, [])
     buf.append(entry)
     if len(buf) > MAX_BUFFER:
@@ -56,14 +68,16 @@ async def log_event(
         from config import LOG_CHANNEL
         log_channel_id = LOG_CHANNEL
 
-    if log_channel_id:
+    # ── 2. Log channel (important events only) ───────────
+    # Skip per-file events to prevent FloodWait on bulk uploads
+    event_base = event.split(" ", 1)[1] if " " in event else event
+    should_send = any(ev in event for ev in _CHANNEL_EVENTS)
+
+    if log_channel_id and should_send:
         text = _format_log(admin_id, event, details, now)
         try:
-            await client.send_message(
-                chat_id    = log_channel_id,
-                text       = text,
-                parse_mode = ParseMode.HTML,
-            )
+            from utils.pacing import send as pacing_send
+            await pacing_send(client, log_channel_id, text)
         except Exception as e:
             logger.warning(f"Log channel send failed: {e}")
 
