@@ -9,4 +9,5 @@ from .builder import (
     post_confirm,
     force_post_keyboard,
     close_button,
+    metadata_picker,
 )
