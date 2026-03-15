@@ -8,9 +8,9 @@ from config import ADMINS
 from utils import pacing
 from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending, clear_all_pending, clear_pending_season
 from database.db import get_settings, mark_posted, pending_col
-from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button
+from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button, metadata_picker
 from services.post import dispatch_post
-from services.metadata import fetch_metadata
+from services.metadata import fetch_metadata, search_all, get_full_meta, result_display_text
 from services.log import (
     send_log_summary, log_post_triggered,
     log_post_success, log_post_failed,
@@ -182,6 +182,87 @@ async def cmd_cancel(client: Client, message: Message):
 #  Force post
 # ─────────────────────────────────────────────────────────────
 
+async def _show_channel_picker(client, message, admin_id, title, season, settings):
+    """Shared helper — show channel picker or single-channel confirm."""
+    channels = settings.get("channels", [])
+    if not channels:
+        await pacing.edit(message, "No channels configured. Use /settings to add channels first.")
+        return
+
+    if len(channels) == 1:
+        _post_session[admin_id]["channels_selected"] = [channels[0]["id"]]
+        audio = settings.get("audio_info", "Hindi + English")
+        subs  = settings.get("sub_info", "English")
+        await pacing.edit(message,
+            "Posting to: <b>" + channels[0]["name"] + "</b>\n\n"
+            "Audio: <code>" + audio + "</code>\nSubs: <code>" + subs + "</code>\n\nConfirm post?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=post_confirm(audio, subs),
+        )
+    else:
+        ep_label = title + " S" + str(season).zfill(2)
+        await pacing.edit(message,
+            "Select channel(s) to post <b>" + ep_label + "</b>:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=channel_picker(channels, []),
+        )
+
+
+@Client.on_callback_query(filters.regex(r"^meta_pick_\d+$") & filters.user(ADMINS))
+async def cb_meta_pick(client: Client, cb: CallbackQuery):
+    admin_id = cb.from_user.id
+    session  = _post_session.get(admin_id)
+    if not session:
+        return await cb.answer("Session expired.", show_alert=True)
+
+    idx     = int(cb.data.split("_")[-1])
+    results = session.get("meta_results", [])
+    if idx >= len(results):
+        return await cb.answer("Invalid selection.", show_alert=True)
+
+    await cb.answer("Fetching details...")
+    await pacing.edit(cb.message, "Fetching metadata details...")
+
+    picked = results[idx]
+    full   = await get_full_meta(picked)
+    session["meta"] = full
+
+    settings = await get_settings(admin_id)
+    title    = session["episodes"][0]["title"]
+    season   = session["season"]
+    await _show_channel_picker(client, cb.message, admin_id, title, season, settings)
+
+
+@Client.on_callback_query(filters.regex("^meta_search$") & filters.user(ADMINS))
+async def cb_meta_search(client: Client, cb: CallbackQuery):
+    admin_id = cb.from_user.id
+    session  = _post_session.get(admin_id)
+    if not session:
+        return await cb.answer("Session expired.", show_alert=True)
+
+    _post_session[admin_id]["search_state"] = True
+    await pacing.edit(cb.message,
+        "Send the search term to look up metadata:",
+        reply_markup=close_button(),
+    )
+    await cb.answer()
+
+
+@Client.on_callback_query(filters.regex("^meta_skip$") & filters.user(ADMINS))
+async def cb_meta_skip(client: Client, cb: CallbackQuery):
+    admin_id = cb.from_user.id
+    session  = _post_session.get(admin_id)
+    if not session:
+        return await cb.answer("Session expired.", show_alert=True)
+
+    session["meta"] = None
+    settings = await get_settings(admin_id)
+    title    = session["episodes"][0]["title"]
+    season   = session["season"]
+    await _show_channel_picker(client, cb.message, admin_id, title, season, settings)
+    await cb.answer("Skipping metadata")
+
+
 @Client.on_callback_query(filters.regex(r"^force_post_") & filters.user(ADMINS))
 async def cb_force_post(client: Client, cb: CallbackQuery):
     parts     = cb.data.split("_")
@@ -196,41 +277,36 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
     title    = episodes[0]["title"]
     settings = await get_settings(admin_id)
 
-    meta = None
-    if settings.get("post_mode") == "rich":
-        meta = await fetch_metadata(title)
-
     _post_session[admin_id] = {
         "title_key":         title_key,
         "season":            season,
         "episodes":          episodes,
-        "meta":              meta,
+        "meta":              None,
+        "meta_results":      [],
         "channels_selected": [],
         "audio_override":    None,
         "subs_override":     None,
     }
 
-    channels = settings.get("channels", [])
-    if not channels:
-        return await pacing.edit(cb.message, "No channels configured. Use /settings to add channels first.")
-
-    if len(channels) == 1:
-        _post_session[admin_id]["channels_selected"] = [channels[0]["id"]]
-        audio = settings.get("audio_info", "Hindi + English")
-        subs  = settings.get("sub_info", "English")
-        await pacing.edit(cb.message,
-            "Posting to: <b>" + channels[0]["name"] + "</b>\n\n"
-            "Audio: <code>" + audio + "</code>\nSubs: <code>" + subs + "</code>\n\nConfirm post?",
-            parse_mode=ParseMode.HTML,
-            reply_markup=post_confirm(audio, subs),
-        )
+    if settings.get("post_mode") == "rich":
+        # Show metadata picker in rich mode
+        await pacing.edit(cb.message, "Searching metadata...")
+        results = await search_all(title)
+        if results:
+            _post_session[admin_id]["meta_results"] = results
+            await pacing.edit(cb.message,
+                result_display_text(results),
+                parse_mode=ParseMode.HTML,
+                reply_markup=metadata_picker(results),
+            )
+        else:
+            await pacing.edit(cb.message,
+                "No metadata found for <b>" + title + "</b>. Continuing without...",
+                parse_mode=ParseMode.HTML,
+            )
+            await _show_channel_picker(client, cb.message, admin_id, title, season, settings)
     else:
-        ep_label = title + " S" + str(season).zfill(2)
-        await pacing.edit(cb.message,
-            "Select channel(s) to post <b>" + ep_label + "</b>:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=channel_picker(channels, []),
-        )
+        await _show_channel_picker(client, cb.message, admin_id, title, season, settings)
     await cb.answer()
 
 
@@ -326,6 +402,29 @@ async def on_inline_edit_text(client: Client, message: Message):
         parse_mode=ParseMode.HTML,
         reply_markup=post_confirm(audio, subs),
     )
+
+
+@Client.on_message(filters.text & _admin_filter, group=4)
+async def on_meta_search_text(client: Client, message: Message):
+    """Handle custom metadata search term."""
+    admin_id = message.from_user.id
+    session  = _post_session.get(admin_id, {})
+    if not session.get("search_state"):
+        return
+
+    session.pop("search_state", None)
+    query   = message.text.strip()
+    results = await search_all(query)
+
+    if results:
+        session["meta_results"] = results
+        await pacing.reply(message,
+            result_display_text(results),
+            parse_mode=ParseMode.HTML,
+            reply_markup=metadata_picker(results),
+        )
+    else:
+        await pacing.reply(message, "No results found for: <code>" + query + "</code>", parse_mode=ParseMode.HTML)
 
 
 # ─────────────────────────────────────────────────────────────
