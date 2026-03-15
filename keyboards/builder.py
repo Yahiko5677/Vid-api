@@ -161,6 +161,27 @@ def quality_buttons(
 
 
 # ═══════════════════════════════════════════════════════
+#  METADATA PICKER (rich mode)
+# ═══════════════════════════════════════════════════════
+
+def metadata_picker(results: list[dict]) -> InlineKeyboardMarkup:
+    from services.metadata import _label
+    rows = []
+    for i, r in enumerate(results):
+        title = r.get("title", "Unknown")[:28]
+        label = _label(r)
+        rows.append([InlineKeyboardButton(
+            f"{i+1}. {title} {label}",
+            callback_data=f"meta_pick_{i}"
+        )])
+    rows.append([
+        InlineKeyboardButton("🔍 Search Again", callback_data="meta_search"),
+        InlineKeyboardButton("⏭ Skip Meta",    callback_data="meta_skip"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+# ═══════════════════════════════════════════════════════
 #  UPLOAD CONFIRM
 # ═══════════════════════════════════════════════════════
 
