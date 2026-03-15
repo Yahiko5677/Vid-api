@@ -1,66 +1,169 @@
 """
-Unified metadata resolver.
+Unified metadata resolver — searches Jikan + OMDB + TMDB.
 
-Strategy:
-  1. Try Jikan (MAL) with TV-type priority — best for anime
-  2. Only fall back to TMDB if Jikan returns zero results at all
-     (not just wrong type — if Jikan finds anything, we trust it)
-
-This prevents TMDB returning a movie when the title is an anime series.
+In rich mode: returns ALL results for admin to pick from (picker shown in admin.py).
+Auto-fetch: fetches full details once admin picks.
 """
 
 import logging
 from services.jikan import search_jikan, get_jikan_details
-from services.tmdb  import search_tmdb, get_details
+from services.tmdb  import search_tmdb, get_details as get_tmdb_details
+from services.omdb  import search_omdb, get_omdb_details
 
 logger = logging.getLogger(__name__)
 
+# Emoji prefix per type — quick visual ID
+TYPE_EMOJI = {
+    "TV":      "📺",
+    "Movie":   "🎬",
+    "OVA":     "📼",
+    "ONA":     "🌐",
+    "Special": "⭐",
+    "movie":   "🎬",
+    "tv":      "📺",
+    "series":  "📺",
+    "anime":   "🎌",
+}
 
+TYPE_LABEL = {
+    "TV":      "TV Series",
+    "Movie":   "Movie",
+    "OVA":     "OVA",
+    "ONA":     "ONA",
+    "Special": "Special",
+    "movie":   "Movie",
+    "tv":      "TV Series",
+    "series":  "TV Series",
+    "anime":   "Anime",
+}
+
+# Source badge
+SOURCE_BADGE = {
+    "jikan": "🎌 MAL",
+    "omdb":  "🎬 OMDB",
+    "tmdb":  "🎥 TMDB",
+}
+
+
+def _label(result: dict) -> str:
+    mt     = result.get("media_type") or result.get("type") or ""
+    src    = result.get("source", "")
+    year   = result.get("year", "")
+    emoji  = TYPE_EMOJI.get(mt, "❓")
+    lbl    = TYPE_LABEL.get(mt, mt) if mt else "?"
+    score  = result.get("score")
+    badge  = SOURCE_BADGE.get(src, "")
+
+    s = emoji + " " + lbl
+    if year and year != "N/A":
+        s += " " + str(year)
+    if score and str(score) not in ("N/A", "None", ""):
+        s += " ⭐" + str(score)
+    if badge:
+        s += " · " + badge
+    return s
+
+
+async def search_all(title: str) -> list[dict]:
+    """
+    Search all sources. Returns unified list sorted by relevance:
+    TV/Anime types first, then by score desc.
+    """
+    results = []
+
+    # Jikan — anime
+    try:
+        jikan = await search_jikan(title)
+        results.extend(jikan[:4])
+    except Exception as e:
+        logger.warning(f"Jikan search failed: {e}")
+
+    # OMDB — movies + series
+    try:
+        omdb = await search_omdb(title)
+        results.extend(omdb[:3])
+    except Exception as e:
+        logger.warning(f"OMDB search failed: {e}")
+
+    # TMDB — fallback
+    try:
+        tmdb = await search_tmdb(title)
+        for item in tmdb[:3]:
+            item.setdefault("score", None)
+            item.setdefault("episodes", None)
+            item.setdefault("studio", None)
+            item["source"] = "tmdb"
+        results.extend(tmdb[:3])
+    except Exception as e:
+        logger.warning(f"TMDB search failed: {e}")
+
+    # Sort: TV/anime first, then score desc, deduplicate by title+year
+    seen   = set()
+    unique = []
+    for r in results:
+        key = (r.get("title","").lower(), r.get("year",""))
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    def sort_key(r):
+        mt = (r.get("media_type") or r.get("type") or "").lower()
+        tv_first  = 0 if mt in ("tv", "anime") else 1
+        score_val = float(r.get("score") or 0)
+        return (tv_first, -score_val)
+
+    return sorted(unique, key=sort_key)[:8]
+
+
+async def get_full_meta(result: dict) -> dict | None:
+    """Fetch full details for a picked result."""
+    src = result.get("source")
+
+    if src == "jikan":
+        mal_id = result.get("mal_id")
+        if mal_id:
+            full = await get_jikan_details(mal_id)
+            return full or result
+        return result
+
+    elif src == "omdb":
+        imdb_id = result.get("imdb_id")
+        if imdb_id:
+            full = await get_omdb_details(imdb_id)
+            return full or result
+        return result
+
+    elif src == "tmdb":
+        tmdb_id = result.get("tmdb_id")
+        ct      = result.get("type", "movie")
+        if tmdb_id:
+            full = await get_tmdb_details(tmdb_id, ct)
+            if full:
+                full.setdefault("score",    None)
+                full.setdefault("episodes", None)
+                full.setdefault("studio",   None)
+                full["source"] = "tmdb"
+                return full
+        return result
+
+    return result
+
+
+def result_display_text(results: list[dict]) -> str:
+    """Format results list for admin picker message."""
+    lines = ["<b>Select correct metadata:</b>\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "Unknown")
+        label = _label(r)
+        lines.append(str(i) + ". <b>" + title + "</b>  " + label)
+    return "\n".join(lines)
+
+
+# Keep simple fetch for non-rich / fallback use
 async def fetch_metadata(title: str) -> dict | None:
-    """
-    Fetch metadata. Jikan first (TV priority), TMDB only if Jikan has zero results.
-    """
-    # ── 1. Jikan — TV priority ────────────────────────────────
-    try:
-        jikan_results = await search_jikan(title)
-        if jikan_results:
-            best = jikan_results[0]   # already sorted TV > others, score desc
-            media_type = best.get("media_type", "")
-            logger.info(f"Jikan top result: '{best['title']}' [{media_type}]")
-
-            # Get full details
-            if best.get("mal_id"):
-                full = await get_jikan_details(best["mal_id"])
-                if full:
-                    logger.info(f"✅ Metadata from Jikan: {full['title']} [{full.get('media_type','')}]")
-                    return full
-
-            logger.info(f"✅ Metadata from Jikan (partial): {best['title']}")
-            return best
-
-    except Exception as e:
-        logger.warning(f"Jikan failed: {e}")
-
-    # ── 2. TMDB fallback — only if Jikan had zero results ─────
-    # (if Jikan found something but it wasn't ideal, we still trust
-    #  Jikan over TMDB to avoid getting movie results for anime)
-    try:
-        tmdb_results = await search_tmdb(title)
-        if tmdb_results:
-            # Prefer TV over movie in TMDB results too
-            tv_results    = [r for r in tmdb_results if r.get("type") == "tv"]
-            best          = tv_results[0] if tv_results else tmdb_results[0]
-            details       = await get_details(best["tmdb_id"], best["type"])
-            if details:
-                details.setdefault("score",      None)
-                details.setdefault("episodes",   None)
-                details.setdefault("studio",     None)
-                details.setdefault("media_type", best.get("type", ""))
-                details["source"] = "tmdb"
-                logger.info(f"✅ Metadata from TMDB: {details['title']} [{best.get('type','')}]")
-                return details
-    except Exception as e:
-        logger.warning(f"TMDB also failed: {e}")
-
-    logger.warning(f"No metadata found for: {title}")
-    return None
+    """Simple auto-fetch — picks best result without showing picker."""
+    results = await search_all(title)
+    if not results:
+        return None
+    best = results[0]
+    return await get_full_meta(best)
