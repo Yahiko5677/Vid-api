@@ -21,6 +21,9 @@ FILE_STORE_MAP: dict = {}   # empty — filled from DB at runtime
 # ── TMDB ──────────────────────────────────────────────────────────────────
 TMDB_API_KEY        = os.environ.get("TMDB_API_KEY", "")
 
+# ── OMDB (free at omdbapi.com — 1000 req/day) ────────────────────────────────
+OMDB_API_KEY        = os.environ.get("OMDB_API_KEY", "")
+
 # ── Admins ────────────────────────────────────────────────────────────────
 ADMINS              = list(map(int, filter(None, os.environ.get("ADMINS", "").split(","))))
 
