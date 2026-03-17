@@ -281,18 +281,24 @@ async def post_rich_mode(
         backdrop_url = meta.get("backdrop_url") if meta else None
         ep_count     = len(episodes)
         ep_range     = "E01-E" + str(ep_count).zfill(2) if ep_count > 1 else "E01"
-        thumb_meta   = {
+        is_movie   = (settings.get("content_type","anime") == "movie")
+        thumb_meta = {
             "title":    (meta.get("title","") if meta else episodes[0].get("title","")),
             "synopsis": (meta.get("synopsis") or meta.get("overview","")) if meta else "",
             "genres":   (meta.get("genres",[]) if meta else []),
-            "episode":  "01",
-            "season":   str(season),
+            "score":    (meta.get("score","") if meta else ""),
+            "year":     (meta.get("year","")  if meta else ""),
         }
+        # Episode/season only relevant for anime/tv — not for movies
+        if not is_movie:
+            thumb_meta["episode"] = "01"
+            thumb_meta["season"]  = str(season)
         thumb_bytes = await build_thumbnail(
             poster_url   = poster_url,
             backdrop_url = backdrop_url,
             watermark    = settings.get("watermark", ""),
             meta         = thumb_meta,
+            is_movie     = is_movie,
         )
         if not thumb_bytes:
             # fallback to simple 16:9 crop
