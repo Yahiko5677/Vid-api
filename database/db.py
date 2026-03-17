@@ -79,6 +79,7 @@ DEFAULT_SETTINGS = {
     "caption_template": DEFAULT_CAPTION_TEMPLATE,
     "button_label":     DEFAULT_BUTTON_LABEL,
     "button_layout":    DEFAULT_BUTTON_LAYOUT,   # e.g. "2,1" or "3" or "1,1,1"
+    "watermark":        "",                       # watermark text on thumbnail
 
     # Per-quality File Store Bot overrides (None = use config.py global)
     # { "480p": {"bot": "Bot480", "channel": -100123}, "720p": {...}, "1080p": {...} }
