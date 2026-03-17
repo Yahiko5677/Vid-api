@@ -214,10 +214,13 @@ async def _show_preview(client, message, admin_id, settings):
     if not thumb_bytes and meta and meta.get("poster_url"):
         from services.thumbnail import build_thumbnail
         episodes  = session.get("episodes", [])
+        is_movie   = (session.get("content_type","anime") == "movie")
         thumb_meta = {
             "title":    meta.get("title", ""),
             "synopsis": meta.get("synopsis") or meta.get("overview",""),
             "genres":   meta.get("genres", []),
+            "score":    meta.get("score",""),
+            "year":     meta.get("year",""),
             "episode":  "01",
             "season":   str(session.get("season","1")),
         }
@@ -226,6 +229,7 @@ async def _show_preview(client, message, admin_id, settings):
             backdrop_url = meta.get("backdrop_url"),
             watermark    = settings.get("watermark",""),
             meta         = thumb_meta,
+            is_movie     = is_movie,
         )
         if not thumb_bytes:
             raw = await download_poster(meta["poster_url"])
@@ -392,62 +396,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
     await cb.answer()
 
 
-@Client.on_callback_query(filters.regex(r"^ctype_(anime|movie|tv)$") & filters.user(ADMINS))
-async def cb_content_type(client: Client, cb: CallbackQuery):
-    admin_id     = cb.from_user.id
-    session      = _post_session.get(admin_id)
-    if not session:
-        return await cb.answer("Session expired.", show_alert=True)
 
-    content_type = cb.data.split("_")[1]   # anime / movie / tv
-    session["content_type"] = content_type
-    title        = session["episodes"][0]["title"]
-
-    TYPE_LABEL = {"anime": "🎌 Anime", "movie": "🎬 Movie", "tv": "📺 TV Series"}
-    await pacing.edit(cb.message,
-        TYPE_LABEL[content_type] + " — Searching <b>" + title + "</b>...",
-        parse_mode=ParseMode.HTML,
-    )
-
-    settings = await get_settings(admin_id)
-    results  = await search_all(title, content_type=content_type)
-
-    if results:
-        session["meta_results"] = results
-        await pacing.edit(cb.message,
-            result_display_text(results),
-            parse_mode=ParseMode.HTML,
-            reply_markup=metadata_picker(results),
-        )
-    else:
-        await pacing.edit(cb.message,
-            "No metadata found for <b>" + title + "</b>. Continuing without...",
-            parse_mode=ParseMode.HTML,
-        )
-        await _show_preview(client, cb.message, admin_id, settings)
-    await cb.answer()
-
-
-# ─────────────────────────────────────────────────────────────
-#  Channel picker
-# ─────────────────────────────────────────────────────────────
-
-@Client.on_callback_query(filters.regex(r"^pick_ch_") & filters.user(ADMINS))
-async def cb_pick_channel(client: Client, cb: CallbackQuery):
-    admin_id = cb.from_user.id
-    ch_id    = int(cb.data.split("_")[-1])
-    session  = _post_session.get(admin_id, {})
-    selected = session.get("channels_selected", [])
-
-    if ch_id in selected:
-        selected.remove(ch_id)
-    else:
-        selected.append(ch_id)
-
-    session["channels_selected"] = selected
-    settings = await get_settings(admin_id)
-    await pacing.edit_markup(cb.message, channel_picker(settings.get("channels", []), selected))
-    await cb.answer()
 
 
 @Client.on_callback_query(filters.regex("^confirm_channels$") & filters.user(ADMINS))
@@ -586,6 +535,9 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
         settings["caption_override"] = session["caption_override"]
     if session.get("custom_thumb_bytes"):
         settings["custom_thumb_bytes"] = session["custom_thumb_bytes"]
+    # Pass content_type so post.py knows movie vs anime/tv for thumbnail card
+    settings["content_type"] = session.get("content_type", "anime")
+    settings["content_type"] = session.get("content_type", "anime")
 
     await pacing.edit(cb.message, "Posting...")
     await log_post_triggered(client, admin_id, title, season, len(episodes), ch_names, log_ch)
