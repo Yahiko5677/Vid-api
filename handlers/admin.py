@@ -389,7 +389,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         await pacing.edit(cb.message,
             "What type of content is <b>" + title + "</b>?",
             parse_mode=ParseMode.HTML,
-            reply_markup=content_type_keyboard(),
+            reply_markup=content_type_picker(),
         )
     else:
         await _show_preview(client, cb.message, admin_id, settings)
