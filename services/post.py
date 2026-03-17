@@ -291,8 +291,9 @@ async def post_rich_mode(
         }
         # Episode/season only relevant for anime/tv — not for movies
         if not is_movie:
-            thumb_meta["episode"] = "01"
-            thumb_meta["season"]  = str(season)
+            ep_range_short         = "01-" + str(ep_count).zfill(2) if ep_count > 1 else "01"
+            thumb_meta["episode"]  = ep_range_short   # e.g. "01-13"
+            thumb_meta["season"]   = str(season)
         thumb_bytes = await build_thumbnail(
             poster_url   = poster_url,
             backdrop_url = backdrop_url,
