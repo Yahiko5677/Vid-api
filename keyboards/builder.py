@@ -161,6 +161,53 @@ def quality_buttons(
 
 
 # ═══════════════════════════════════════════════════════
+#  CONTENT TYPE SELECTOR
+# ═══════════════════════════════════════════════════════
+
+def content_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎌 Anime",     callback_data="ctype_anime"),
+            InlineKeyboardButton("🎬 Movie",     callback_data="ctype_movie"),
+            InlineKeyboardButton("📺 TV Series", callback_data="ctype_tv"),
+        ],
+        [InlineKeyboardButton("❌ Cancel",       callback_data="cancel_post")],
+    ])
+
+
+# ═══════════════════════════════════════════════════════
+#  POST PREVIEW KEYBOARD
+# ═══════════════════════════════════════════════════════
+
+def post_preview_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🖼 Change Thumbnail", callback_data="preview_change_thumb"),
+            InlineKeyboardButton("✅ Post Now",         callback_data="preview_post"),
+        ],
+        [
+            InlineKeyboardButton("📝 Edit Caption",     callback_data="preview_edit_caption"),
+            InlineKeyboardButton("❌ Cancel",            callback_data="cancel_post"),
+        ],
+    ])
+
+
+# ═══════════════════════════════════════════════════════
+#  CONTENT TYPE PICKER
+# ═══════════════════════════════════════════════════════
+
+def content_type_picker() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎌 Anime",   callback_data="ctype_anime"),
+            InlineKeyboardButton("📺 TV Show", callback_data="ctype_tv"),
+            InlineKeyboardButton("🎬 Movie",   callback_data="ctype_movie"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_post")],
+    ])
+
+
+# ═══════════════════════════════════════════════════════
 #  METADATA PICKER (rich mode)
 # ═══════════════════════════════════════════════════════
 
