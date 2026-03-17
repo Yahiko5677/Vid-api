@@ -17,6 +17,7 @@ from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helper_func import encode
 from services.tmdb import download_poster
+from services.thumbnail import process_thumbnail, build_thumbnail
 from utils import pacing
 from config import DEFAULT_CAPTION_TEMPLATE, DEFAULT_BUTTON_LABEL, DEFAULT_BUTTON_LAYOUT
 
@@ -256,12 +257,15 @@ async def post_rich_mode(
     sticker    = settings.get("sticker_id")
     poster_url = meta.get("poster_url") if meta else None
 
-    # Caption
-    try:
-        caption = _render_caption(template, meta, ep_range, season, audio, subs)
-    except KeyError as e:
-        caption = f"❌ Caption template error — unknown variable {e}"
-        logger.error(f"Caption render error: {e}")
+    # Caption — use override if set (admin edited in preview)
+    if settings.get("caption_override"):
+        caption = settings["caption_override"]
+    else:
+        try:
+            caption = _render_caption(template, meta, ep_range, season, audio, subs)
+        except KeyError as e:
+            caption = "Caption template error — unknown variable " + str(e)
+            logger.error(f"Caption render error: {e}")
 
     # Batch links
     quality_links = await _build_quality_batch_links(client, episodes, ch_qualities, q_bots, sticker, notify_chat_id=channel_id)
@@ -270,22 +274,44 @@ async def post_rich_mode(
     from keyboards import quality_buttons
     markup = quality_buttons(quality_links, btn_label, layout, ep_range)
 
-    # Send with poster or text fallback
-    sent = False
-    if poster_url:
-        poster_bytes = await download_poster(poster_url)
-        if poster_bytes:
-            try:
-                await pacing.send_photo(
-                    client,
-                    chat_id      = channel_id,
-                    photo        = io.BytesIO(poster_bytes),
-                    caption      = caption,
-                    reply_markup = markup,
-                )
-                sent = True
-            except Exception as e:
-                logger.warning(f"Poster send failed, falling back to text: {e}")
+    # Use custom thumbnail if admin changed it, else build cinematic thumbnail
+    sent        = False
+    thumb_bytes = settings.get("custom_thumb_bytes")
+    if not thumb_bytes and poster_url:
+        backdrop_url = meta.get("backdrop_url") if meta else None
+        ep_count     = len(episodes)
+        ep_range     = "E01-E" + str(ep_count).zfill(2) if ep_count > 1 else "E01"
+        thumb_meta   = {
+            "title":    (meta.get("title","") if meta else episodes[0].get("title","")),
+            "synopsis": (meta.get("synopsis") or meta.get("overview","")) if meta else "",
+            "genres":   (meta.get("genres",[]) if meta else []),
+            "episode":  "01",
+            "season":   str(season),
+        }
+        thumb_bytes = await build_thumbnail(
+            poster_url   = poster_url,
+            backdrop_url = backdrop_url,
+            watermark    = settings.get("watermark", ""),
+            meta         = thumb_meta,
+        )
+        if not thumb_bytes:
+            # fallback to simple 16:9 crop
+            raw = await download_poster(poster_url)
+            if raw:
+                thumb_bytes = process_thumbnail(raw)
+
+    if thumb_bytes:
+        try:
+            await pacing.send_photo(
+                client,
+                chat_id      = channel_id,
+                photo        = io.BytesIO(thumb_bytes),
+                caption      = caption,
+                reply_markup = markup,
+            )
+            sent = True
+        except Exception as e:
+            logger.warning(f"Poster send failed, falling back to text: {e}")
 
     if not sent:
         await pacing.send(
