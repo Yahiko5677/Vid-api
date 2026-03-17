@@ -130,7 +130,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
     msg_id stored here = original message ID in admin PM.
     """
     admin_id = data["admin_id"]
-    ep_str   = f"S{data['season']:02d}E{data['episode']:02d}"
+    ep_str   = "Movie" if data.get("is_movie") else f"S{data['season']:02d}E{data['episode']:02d}"
     label    = f"{title} {ep_str} {data['quality']}"
 
     ep = save_file(
@@ -202,7 +202,8 @@ async def on_video_upload(client: Client, message: Message):
     # Season-aware key — S01 and S02 are separate groups
     title_key       = _make_title_key(raw_title, season)
     key             = uuid.uuid4().hex[:8]
-    ep_str          = f"S{season:02d}E{episode:02d}"
+    is_movie = (episode == 0)
+    ep_str   = "Movie" if is_movie else f"S{season:02d}E{episode:02d}"
 
     data = {
         "key":           key,
@@ -216,6 +217,7 @@ async def on_video_upload(client: Client, message: Message):
         "season":        season,
         "episode":       episode,
         "quality":       quality,
+        "is_movie":      is_movie,
         "editing_title": False,
     }
 
