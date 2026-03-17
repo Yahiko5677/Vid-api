@@ -26,6 +26,7 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"{r_icon} Rich",   callback_data="set_mode_rich"),
         ],
         [InlineKeyboardButton("📝 Caption Template",  callback_data="set_caption")],
+        [InlineKeyboardButton(f"🔖 Watermark: {settings.get("watermark","") or "Not set"}", callback_data="set_watermark")],
         [
             InlineKeyboardButton("🏷 Button Label",   callback_data="set_btn_label"),
             InlineKeyboardButton(f"⌨️ Layout: {layout}", callback_data="set_btn_layout"),
@@ -35,6 +36,7 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"📝 {subs}",        callback_data="set_subs"),
         ],
         [InlineKeyboardButton(f"🎴 Sticker ({sticker})", callback_data="set_sticker")],
+    [InlineKeyboardButton(f"💧 Watermark",             callback_data="set_watermark")],
         [InlineKeyboardButton("🤖 File Store Bots",   callback_data="set_quality_bots")],
         [InlineKeyboardButton(f"📢 Channels ({ch_count})", callback_data="set_channels")],
         [InlineKeyboardButton("❌ Close",             callback_data="close_settings")],
