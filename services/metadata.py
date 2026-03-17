@@ -1,8 +1,11 @@
 """
-Unified metadata resolver — searches Jikan + OMDB + TMDB.
+Unified metadata resolver.
 
-In rich mode: returns ALL results for admin to pick from (picker shown in admin.py).
-Auto-fetch: fetches full details once admin picks.
+Routing by content type (selected by admin at post time):
+  Anime / TV  → Jikan first → OMDB fallback
+  Movie       → TMDB first  → OMDB fallback
+
+Picker: returns all results from relevant sources for admin to choose.
 """
 
 import logging
@@ -12,7 +15,8 @@ from services.omdb  import search_omdb, get_omdb_details
 
 logger = logging.getLogger(__name__)
 
-# Emoji prefix per type — quick visual ID
+CONTENT_TYPES = ["anime", "tv", "movie"]
+
 TYPE_EMOJI = {
     "TV":      "📺",
     "Movie":   "🎬",
@@ -37,7 +41,6 @@ TYPE_LABEL = {
     "anime":   "Anime",
 }
 
-# Source badge
 SOURCE_BADGE = {
     "jikan": "🎌 MAL",
     "omdb":  "🎬 OMDB",
@@ -46,16 +49,16 @@ SOURCE_BADGE = {
 
 
 def _label(result: dict) -> str:
-    mt     = result.get("media_type") or result.get("type") or ""
-    src    = result.get("source", "")
-    year   = result.get("year", "")
-    emoji  = TYPE_EMOJI.get(mt, "❓")
-    lbl    = TYPE_LABEL.get(mt, mt) if mt else "?"
-    score  = result.get("score")
-    badge  = SOURCE_BADGE.get(src, "")
+    mt    = result.get("media_type") or result.get("type") or ""
+    src   = result.get("source", "")
+    year  = result.get("year", "")
+    emoji = TYPE_EMOJI.get(mt, "❓")
+    lbl   = TYPE_LABEL.get(mt, mt) if mt else "?"
+    score = result.get("score")
+    badge = SOURCE_BADGE.get(src, "")
 
     s = emoji + " " + lbl
-    if year and year != "N/A":
+    if year and year not in ("N/A", ""):
         s += " " + str(year)
     if score and str(score) not in ("N/A", "None", ""):
         s += " ⭐" + str(score)
@@ -64,55 +67,60 @@ def _label(result: dict) -> str:
     return s
 
 
-async def search_all(title: str) -> list[dict]:
+async def search_all(title: str, content_type: str = "anime") -> list[dict]:
     """
-    Search all sources. Returns unified list sorted by relevance:
-    TV/Anime types first, then by score desc.
+    Search based on content type:
+      anime / tv → Jikan first, OMDB fallback
+      movie      → TMDB first, OMDB fallback
     """
     results = []
+    seen    = set()
 
-    # Jikan — anime
-    try:
-        jikan = await search_jikan(title)
-        results.extend(jikan[:4])
-    except Exception as e:
-        logger.warning(f"Jikan search failed: {e}")
+    def _add(items):
+        for r in items:
+            key = (r.get("title","").lower(), r.get("year",""))
+            if key not in seen:
+                seen.add(key)
+                results.append(r)
 
-    # OMDB — movies + series
-    try:
-        omdb = await search_omdb(title)
-        results.extend(omdb[:3])
-    except Exception as e:
-        logger.warning(f"OMDB search failed: {e}")
+    if content_type in ("anime", "tv"):
+        # ── Jikan (MAL) ───────────────────────────────────────
+        try:
+            jikan = await search_jikan(title)
+            _add(jikan[:5])
+        except Exception as e:
+            logger.warning(f"Jikan failed: {e}")
 
-    # TMDB — fallback
-    try:
-        tmdb = await search_tmdb(title)
-        for item in tmdb[:3]:
-            item.setdefault("score", None)
-            item.setdefault("episodes", None)
-            item.setdefault("studio", None)
-            item["source"] = "tmdb"
-        results.extend(tmdb[:3])
-    except Exception as e:
-        logger.warning(f"TMDB search failed: {e}")
+        # ── OMDB fallback ─────────────────────────────────────
+        try:
+            omdb_type = "series"
+            omdb = await search_omdb(title, media_type=omdb_type)
+            _add(omdb[:3])
+        except Exception as e:
+            logger.warning(f"OMDB failed: {e}")
 
-    # Sort: TV/anime first, then score desc, deduplicate by title+year
-    seen   = set()
-    unique = []
-    for r in results:
-        key = (r.get("title","").lower(), r.get("year",""))
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
+    else:
+        # content_type == "movie"
+        # ── TMDB (best for movies) ────────────────────────────
+        try:
+            tmdb = await search_tmdb(title, content_type="movie")
+            for item in tmdb[:5]:
+                item.setdefault("score",    None)
+                item.setdefault("episodes", None)
+                item.setdefault("studio",   None)
+                item["source"] = "tmdb"
+            _add(tmdb[:5])
+        except Exception as e:
+            logger.warning(f"TMDB failed: {e}")
 
-    def sort_key(r):
-        mt = (r.get("media_type") or r.get("type") or "").lower()
-        tv_first  = 0 if mt in ("tv", "anime") else 1
-        score_val = float(r.get("score") or 0)
-        return (tv_first, -score_val)
+        # ── OMDB fallback ─────────────────────────────────────
+        try:
+            omdb = await search_omdb(title, media_type="movie")
+            _add(omdb[:3])
+        except Exception as e:
+            logger.warning(f"OMDB failed: {e}")
 
-    return sorted(unique, key=sort_key)[:8]
+    return results[:8]
 
 
 async def get_full_meta(result: dict) -> dict | None:
@@ -150,7 +158,6 @@ async def get_full_meta(result: dict) -> dict | None:
 
 
 def result_display_text(results: list[dict]) -> str:
-    """Format results list for admin picker message."""
     lines = ["<b>Select correct metadata:</b>\n"]
     for i, r in enumerate(results, 1):
         title = r.get("title", "Unknown")
@@ -159,11 +166,9 @@ def result_display_text(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# Keep simple fetch for non-rich / fallback use
-async def fetch_metadata(title: str) -> dict | None:
-    """Simple auto-fetch — picks best result without showing picker."""
-    results = await search_all(title)
+async def fetch_metadata(title: str, content_type: str = "anime") -> dict | None:
+    """Auto-fetch best result without showing picker."""
+    results = await search_all(title, content_type)
     if not results:
         return None
-    best = results[0]
-    return await get_full_meta(best)
+    return await get_full_meta(results[0])
