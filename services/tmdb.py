@@ -45,7 +45,8 @@ async def search_tmdb(title: str, content_type: str = "auto") -> list[dict]:
                             "title":    name,
                             "year":     year,
                             "overview": item.get("overview", "")[:200],
-                            "poster_url": poster,
+                            "poster_url":   poster,
+                    "backdrop_url": backdrop,
                             "genres":   [],   # filled by get_details if needed
                         })
             except Exception as e:
@@ -71,7 +72,8 @@ async def get_details(tmdb_id: int, content_type: str) -> dict | None:
                 name   = data.get("title") or data.get("name") or ""
                 date_s = data.get("release_date") or data.get("first_air_date") or ""
                 genres = [g["name"] for g in data.get("genres", [])]
-                poster = f"{IMG_BASE}{data['poster_path']}" if data.get("poster_path") else None
+                poster   = f"{IMG_BASE}{data['poster_path']}" if data.get("poster_path") else None
+                backdrop = f"{IMG_BASE}{data['backdrop_path']}" if data.get("backdrop_path") else None
                 return {
                     "tmdb_id":    tmdb_id,
                     "type":       content_type,
@@ -79,7 +81,8 @@ async def get_details(tmdb_id: int, content_type: str) -> dict | None:
                     "year":       date_s[:4] if date_s else "N/A",
                     "overview":   data.get("overview", "")[:300],
                     "genres":     genres,
-                    "poster_url": poster,
+                    "poster_url":   poster,
+                    "backdrop_url": backdrop,
                 }
         except Exception as e:
             logger.warning(f"TMDB details error: {e}")
