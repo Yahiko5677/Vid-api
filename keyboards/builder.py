@@ -26,7 +26,7 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"{r_icon} Rich",   callback_data="set_mode_rich"),
         ],
         [InlineKeyboardButton("📝 Caption Template",  callback_data="set_caption")],
-        [InlineKeyboardButton(f"🔖 Watermark: {settings.get("watermark","") or "Not set"}", callback_data="set_watermark")],
+        [InlineKeyboardButton("🔖 Watermark: " + (settings.get("watermark","") or "Not set"), callback_data="set_watermark")],
         [
             InlineKeyboardButton("🏷 Button Label",   callback_data="set_btn_label"),
             InlineKeyboardButton(f"⌨️ Layout: {layout}", callback_data="set_btn_layout"),
