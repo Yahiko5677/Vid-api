@@ -176,6 +176,15 @@ async def cb_set_subs(client: Client, cb: CallbackQuery):
 #  Sticker
 # ─────────────────────────────────────────────────────────────
 
+@Client.on_callback_query(filters.regex("^set_watermark$") & filters.user(ADMINS))
+async def cb_set_watermark(client: Client, cb: CallbackQuery):
+    _edit_state[cb.from_user.id] = "watermark"
+    settings = await get_settings(cb.from_user.id)
+    current  = settings.get("watermark", "")
+    text = "<b>Thumbnail Watermark</b>\n\nCurrent: <code>" + (current or "Not set") + "</code>\n\nSend watermark text (e.g. <code>@MyChannel</code>)\nSend <code>clear</code> to remove:"
+    await pacing.edit(cb.message, text, reply_markup=close_button())
+    await cb.answer()
+
 @Client.on_callback_query(filters.regex("^set_sticker$") & filters.user(ADMINS))
 async def cb_set_sticker(client: Client, cb: CallbackQuery):
     _edit_state[cb.from_user.id] = "sticker"
@@ -386,6 +395,15 @@ async def on_text_input(client: Client, message: Message):
         await pacing.reply(message, f"✅ Layout set to: <code>{text}</code>",
                            reply_markup=settings_menu(settings), parse_mode=ParseMode.HTML)
 
+    elif state == "watermark":
+        val = "" if message.text.strip() == "-" else message.text.strip()
+        await update_settings(admin_id, watermark=val)
+        _edit_state.pop(admin_id)
+        settings = await get_settings(admin_id)
+        await log_settings_changed(client, admin_id, "Watermark", val or "removed")
+        await message.reply("Watermark " + ("set to <code>" + val + "</code>" if val else "removed") + "!",
+                            reply_markup=settings_menu(settings), parse_mode=ParseMode.HTML)
+
     elif state == "audio":
         await update_settings(admin_id, audio_info=text)
         _edit_state.pop(admin_id)
@@ -399,6 +417,17 @@ async def on_text_input(client: Client, message: Message):
         settings = await get_settings(admin_id)
         await log_settings_changed(client, admin_id, "Sub Info", text)
         await pacing.reply(message, "✅ Subtitle info updated!", reply_markup=settings_menu(settings))
+
+    elif state == "watermark":
+        val = message.text.strip()
+        if val.lower() == "clear":
+            val = ""
+        await update_settings(admin_id, watermark=val)
+        _edit_state.pop(admin_id)
+        settings = await get_settings(admin_id)
+        await log_settings_changed(client, admin_id, "Watermark", val or "cleared")
+        msg = "✅ Watermark cleared!" if not val else f"✅ Watermark set to: <code>{val}</code>"
+        await pacing.reply(message, msg, reply_markup=settings_menu(settings), parse_mode=ParseMode.HTML)
 
     elif state == "channel":
         try:
