@@ -63,7 +63,17 @@ def parse_quality(filename: str) -> str | None:
 
 
 def parse_episode(filename: str):
-    """Returns (season, episode) as ints. Season defaults to 1 if not found."""
+    """
+    Returns (season, episode) as ints.
+    Returns (1, 0) for movies — episode=0 signals 'this is a movie'.
+    Season defaults to 1 if not found.
+    """
+    # Detect movie keywords before running episode patterns
+    name_lower = filename.lower()
+    movie_keywords = ["the movie", "- movie", ".movie.", "_movie_", "(movie)"]
+    if any(kw in name_lower for kw in movie_keywords):
+        return 1, 0   # episode=0 = movie
+
     for pat in EPISODE_PATTERNS:
         m = re.search(pat, filename, re.IGNORECASE)
         if m:
@@ -71,7 +81,7 @@ def parse_episode(filename: str):
                 return int(m.group(1)), int(m.group(2))
             elif len(m.groups()) == 1:
                 return 1, int(m.group(1))
-    return None, None
+    return 1, 0   # no episode found = treat as movie/special
 
 
 def parse_title(filename: str) -> str:
