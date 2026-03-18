@@ -10,7 +10,7 @@ from config import ADMINS
 from helper_func import parse_quality, parse_episode, parse_title
 import uuid as _uuid
 from memory_store import save_file, _cb_map
-from keyboards import confirm_upload, force_post_keyboard
+from keyboards import confirm_upload, force_post_keyboard, quality_picker
 from services.log import log_file_received, log_file_confirmed
 from utils import pacing
 
@@ -210,8 +210,15 @@ async def on_video_upload(client: Client, message: Message):
         return
 
     admin_id        = message.from_user.id
-    quality         = parse_quality(file_name) or "480p"
+    # Quality: filename first, caption fallback, then default 480p
+    caption         = message.caption or ""
+    quality         = parse_quality(file_name) or parse_quality(caption) or "480p"
     season, episode = parse_episode(file_name)
+    # Episode fallback from caption if filename has none
+    if season is None or episode is None:
+        s_cap, e_cap = parse_episode(caption)
+        season  = s_cap
+        episode = e_cap
     season          = season  or 1
     episode         = episode or 1
     raw_title       = parse_title(file_name)
@@ -240,6 +247,7 @@ async def on_video_upload(client: Client, message: Message):
     # Always reschedule debounce — resets 3s window on each new file
     _schedule_summary(client, admin_id, message.chat.id)
 
+    # ── Quality unknown → ask admin ───────────────────────────
     # ── Title cached → auto-save silently ────────────────────
     cached = get_cached_title(admin_id, title_key)
     if cached:
@@ -393,6 +401,49 @@ async def on_title_edit_reply(client: Client, message: Message):
 # ─────────────────────────────────────────────────────────────
 #  Discard
 # ─────────────────────────────────────────────────────────────
+
+@Client.on_callback_query(filters.regex(r"^qpick_") & filters.user(ADMINS))
+async def cb_quality_pick(client: Client, cb: CallbackQuery):
+    parts   = cb.data.split("_", 2)   # qpick_{quality}_{key}
+    quality = parts[1]
+    key     = parts[2]
+    data    = _pending_confirm.get(key)
+    if not data:
+        return await cb.answer("Expired.", show_alert=True)
+
+    data["quality"]  = quality
+    data["is_movie"] = (data.get("episode", -1) == 0)
+    ep_str = "Movie" if data.get("is_movie") else "S" + str(data["season"]).zfill(2) + "E" + str(data["episode"]).zfill(2)
+
+    await pacing.edit(cb.message,
+        "✅ Quality set: <b>" + quality + "</b>\n<code>" + data["raw_title"] + " " + ep_str + " " + quality + "</code>",
+    )
+    await cb.answer(quality + " selected")
+
+    # Now proceed with normal title confirm flow
+    title_key = data["title_key"]
+    admin_id  = data["admin_id"]
+    cached    = get_cached_title(admin_id, title_key)
+
+    if cached:
+        await _store_file(client, cb.message.chat.id, data, cached, title_key)
+    else:
+        group_key      = (admin_id, title_key)
+        already_asking = group_key in _waiting_for_title
+        queue = _waiting_for_title.setdefault(group_key, [])
+        if key not in queue:
+            queue.append(key)
+        if not already_asking:
+            s_lbl = "Movie" if data.get("is_movie") else "S" + str(data["season"]).zfill(2)
+            await pacing.send(client, cb.message.chat.id,
+                "📁 <b>Confirm title</b>\n\n"
+                "📌 Title   : <code>" + data["raw_title"] + "</code>\n"
+                "📺          : <code>" + s_lbl + "</code>\n"
+                "🎞 Quality : <code>" + quality + "</code>\n\n"
+                "Confirm title for all <b>" + s_lbl + "</b> files:",
+                reply_markup=confirm_upload(data["raw_title"], data["season"], data["episode"], quality, key),
+            )
+
 
 @Client.on_callback_query(filters.regex(r"^du:") & filters.user(ADMINS))
 async def cb_discard_upload(client: Client, cb: CallbackQuery):
