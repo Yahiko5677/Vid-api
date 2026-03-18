@@ -37,6 +37,10 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Shared short-key → (title_key, season) map for callback data (64-byte limit)
+_cb_map: dict[str, tuple] = {}
+
+
 # ═══════════════════════════════════════════════════════
 #  WRITE
 # ═══════════════════════════════════════════════════════
