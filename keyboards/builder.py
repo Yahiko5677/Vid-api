@@ -265,9 +265,13 @@ def post_confirm(audio_info: str, sub_info: str) -> InlineKeyboardMarkup:
 #  FORCE POST
 # ═══════════════════════════════════════════════════════
 
-def force_post_keyboard(title_key: str, season: int) -> InlineKeyboardMarkup:
+def force_post_keyboard(cb_key: str, season: int = 0) -> InlineKeyboardMarkup:
+    """
+    cb_key: short 8-char UUID stored in admin._cb_map → (title_key, season)
+    Use 'fp_' + cb_key as callback_data (stays well under 64 bytes).
+    """
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🚀 Force Post", callback_data=f"force_post_{title_key}_{season}"),
+        InlineKeyboardButton("🚀 Force Post", callback_data="fp_" + cb_key),
         InlineKeyboardButton("❌ Skip",       callback_data="cancel_post"),
     ]])
 
