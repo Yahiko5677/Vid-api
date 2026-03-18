@@ -45,6 +45,23 @@ EPISODE_PATTERNS = [
 ]
 
 # Known anime movie title keywords — signals episode=0 (movie)
+QUALITY_PATTERNS = [
+    (r'2160p?|4k|uhd',  '2160p'),
+    (r'1080p?',         '1080p'),
+    (r'720p?',          '720p'),
+    (r'480p?',          '480p'),
+    (r'360p?',          '360p'),
+]
+
+
+def parse_quality(filename: str) -> str | None:
+    fn = filename.lower()
+    for pattern, label in QUALITY_PATTERNS:
+        if re.search(pattern, fn):
+            return label
+    return None
+
+
 # Generic movie keywords — title-independent
 MOVIE_KEYWORDS = ["the movie", "- movie", ".movie.", "_movie_", "(movie)", " film "]
 
