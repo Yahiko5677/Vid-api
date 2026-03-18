@@ -391,9 +391,9 @@ async def on_title_edit_reply(client: Client, message: Message):
         data["title_key"]     = new_title_key
         data["editing_title"] = False
 
-        await pacing.reply(message,
-            f"✅ Title set: <code>{new_title}</code>\n"
-            f"Confirm for all <b>{len(queued)}</b> S{season:02d} file(s)?",
+        s_lbl2 = "Movie" if data.get("is_movie") else "S" + str(season).zfill(2)
+        txt    = "✅ Title set: <code>" + new_title + "</code>\nConfirm for all <b>" + str(len(queued)) + "</b> " + s_lbl2 + " file(s)?"
+        await pacing.reply(message, txt,
             reply_markup=confirm_upload(new_title, season, data["episode"], data["quality"], key),
         )
 
