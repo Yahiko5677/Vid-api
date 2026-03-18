@@ -113,6 +113,19 @@ def parse_episode(filename: str):
     # ── 5. Nothing → movie/standalone ─────────────────────────
     return 1, 0
 
+# Compiled junk regex — strips quality/technical tokens from title
+_JUNK_RE = re.compile(
+    r'\b(?:2160p?|4[Kk]|[Uu][Hh][Dd]|1080p?|720p?|480p?|360p?'
+    r'|BluRay|BDRip|BRRip|WEB-?DL|WEBRip|HDRip|AMZN|NF|DSNP'
+    r'|HEVC|[Hx]\.?264|[Hx]\.?265|10bit|8bit'
+    r'|AAC|AC3|DD[P+]?|DTS|FLAC|MP3|Atmos'
+    r'|\d+\.\d+ch?|Multi[-\s]?Audio|Dual[-\s]?Audio'
+    r'|ESub|MSub|Eng?|Jap?|Hin?|Tam?|Tel?'
+    r'|HD\b|SD\b|FHD\b|UHD\b)\b',
+    re.IGNORECASE
+)
+
+
 def parse_title(filename: str) -> str:
     """
     Best-effort title extraction.
