@@ -231,6 +231,24 @@ def metadata_picker(results: list[dict]) -> InlineKeyboardMarkup:
 
 
 # ═══════════════════════════════════════════════════════
+#  QUALITY PICKER (when quality not in filename)
+# ═══════════════════════════════════════════════════════
+
+def quality_picker(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("480p",  callback_data="qpick_480p_"  + key),
+            InlineKeyboardButton("720p",  callback_data="qpick_720p_"  + key),
+            InlineKeyboardButton("1080p", callback_data="qpick_1080p_" + key),
+        ],
+        [
+            InlineKeyboardButton("2160p", callback_data="qpick_2160p_" + key),
+            InlineKeyboardButton("🗑 Discard", callback_data="du:"    + key),
+        ],
+    ])
+
+
+# ═══════════════════════════════════════════════════════
 #  UPLOAD CONFIRM
 # ═══════════════════════════════════════════════════════
 
