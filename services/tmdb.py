@@ -46,7 +46,7 @@ async def search_tmdb(title: str, content_type: str = "auto") -> list[dict]:
                             "year":     year,
                             "overview": item.get("overview", "")[:200],
                             "poster_url":   poster,
-                    "backdrop_url": backdrop,
+                            "backdrop_url": None,  # filled by get_details
                             "genres":   [],   # filled by get_details if needed
                         })
             except Exception as e:
