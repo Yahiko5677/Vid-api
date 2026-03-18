@@ -5,6 +5,7 @@ from .builder import (
     channel_quality_picker,
     channel_picker,
     quality_buttons,
+    quality_picker,
     confirm_upload,
     post_confirm,
     force_post_keyboard,
