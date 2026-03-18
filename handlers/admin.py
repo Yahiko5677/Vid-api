@@ -1,4 +1,5 @@
 import logging
+import uuid
 from pyrogram import filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
@@ -6,9 +7,9 @@ from pyrogram.enums import ParseMode
 from pyrogram import Client
 from config import ADMINS
 from utils import pacing
-from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending, clear_all_pending, clear_pending_season
+from memory_store import get_all_pending, get_season_episodes, remove_episode, count_pending, clear_all_pending, clear_pending_season, _cb_map
 from database.db import get_settings, mark_posted, pending_col
-from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button, metadata_picker
+from keyboards import channel_picker, post_confirm, force_post_keyboard, close_button, metadata_picker, post_preview_keyboard, content_type_picker
 from services.post import dispatch_post
 from services.metadata import fetch_metadata, search_all, get_full_meta, result_display_text, CONTENT_TYPES
 from services.log import (
@@ -19,6 +20,7 @@ from services.log import (
 logger        = logging.getLogger(__name__)
 _admin_filter = filters.private & filters.user(ADMINS)
 _post_session: dict[int, dict] = {}
+# _cb_map imported from memory_store (shared with upload.py)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -71,10 +73,12 @@ async def cmd_pending(client: Client, message: Message):
             q_miss   = [q for q in ["480p", "720p", "1080p"] if q not in q_have]
             miss_str = " Missing: " + ", ".join(q_miss) if q_miss else " Ready"
             lines.append("  E" + str(ep["episode"]).zfill(2) + " " + miss_str)
-        tk = eps[0]["title_key"]
+        tk    = eps[0]["title_key"]
+        cbkey = uuid.uuid4().hex[:8]
+        _cb_map[cbkey] = (tk, season)
         buttons.append([InlineKeyboardButton(
             "Post " + title + " S" + str(season).zfill(2),
-            callback_data="force_post_" + tk + "_" + str(season)
+            callback_data="fp_" + cbkey
         )])
 
     buttons.append([InlineKeyboardButton("Close", callback_data="close")])
@@ -110,9 +114,11 @@ async def cmd_clearpending(client: Client, message: Message):
         tk     = eps[0]["title_key"]
         count  = len(eps)
         lines_out.append("• <b>" + title + "</b> S" + str(season).zfill(2) + " — " + str(count) + " ep(s)")
+        cbkey2 = uuid.uuid4().hex[:8]
+        _cb_map[cbkey2] = (tk, season)
         buttons.append([InlineKeyboardButton(
             "🗑 " + title + " S" + str(season).zfill(2) + " (" + str(count) + " eps)",
-            callback_data="clr_s_" + tk + "_" + str(season)
+            callback_data="cs_" + cbkey2
         )])
 
     buttons.append([InlineKeyboardButton(
@@ -359,11 +365,14 @@ async def cb_meta_skip(client: Client, cb: CallbackQuery):
     await cb.answer("Skipping metadata")
 
 
-@Client.on_callback_query(filters.regex(r"^force_post_") & filters.user(ADMINS))
+@Client.on_callback_query(filters.regex(r"^fp_") & filters.user(ADMINS))
 async def cb_force_post(client: Client, cb: CallbackQuery):
-    parts     = cb.data.split("_")
-    season    = int(parts[-1])
-    title_key = "_".join(parts[2:-1])
+    cbkey  = cb.data[3:]
+    entry  = _cb_map.get(cbkey)  # keep in map — may be tapped multiple times
+    if not entry:
+        # Fallback: try old force_post_ format or expired
+        return await cb.answer("Expired — use /pending again.", show_alert=True)
+    title_key, season = entry
     admin_id  = cb.from_user.id
     episodes  = get_season_episodes(admin_id, title_key, season)
 
