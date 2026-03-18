@@ -58,31 +58,67 @@ async def _get_batch_link(start_id: int, end_id: int, bot_username: str, channel
     return f"https://t.me/{bot_username}?start={b64}"
 
 
+def _clean(val, fallback=""):
+    # Return val if meaningful, else fallback
+    if not val:
+        return fallback
+    s = str(val).strip()
+    return fallback if s in ("N/A", "None", "?", "0", "0.0") else s
+
+
 def _render_caption(
     template: str, meta: dict | None, ep_range: str,
     season: int, audio_info: str, sub_info: str,
 ) -> str:
-    year     = (meta.get("year")     or "N/A")              if meta else "N/A"
-    genres   = " • ".join((meta.get("genres") or [])[:3])   if meta else ""
-    score    = str(meta.get("score") or "N/A")              if meta else "N/A"
-    episodes = str(meta.get("episodes") or "?")             if meta else "?"
-    studio   = (meta.get("studio")   or "N/A")              if meta else "N/A"
-    synopsis = (meta.get("synopsis") or meta.get("overview") or "") if meta else ""
-    title    = (meta.get("title")    or "")                 if meta else ""
+    import re as _re
+    m        = meta or {}
+    title    = _clean(m.get("title"),    "Unknown Title")
+    year     = _clean(m.get("year"),     "")
+    genres   = " • ".join(g for g in (m.get("genres") or [])[:3] if g)
+    score    = _clean(m.get("score"),    "")
+    episodes = _clean(m.get("episodes"), "")
+    studio   = _clean(m.get("studio"),   "")
+    synopsis = _clean(m.get("synopsis") or m.get("overview"), "")
 
-    return template.format(
-        title    = title,
-        year     = year,
-        genres   = genres,
-        score    = score,
-        episodes = episodes,
-        studio   = studio,
-        synopsis = synopsis,
-        season   = f"Season {season}",
+    # Render with all vars — empty strings for missing fields
+    # Escape literal braces in values to prevent str.format() errors
+    def _esc(s): return str(s).replace("{", "{{").replace("}", "}}")
+
+    rendered = template.format(
+        title    = _esc(title),
+        year     = _esc(year),
+        genres   = _esc(genres),
+        score    = _esc(score),
+        episodes = _esc(episodes),
+        studio   = _esc(studio),
+        synopsis = _esc(synopsis),
+        season   = "Season " + str(season),
         ep_range = ep_range,
-        audio    = audio_info,
-        subs     = sub_info,
+        audio    = _esc(audio_info),
+        subs     = _esc(sub_info),
     )
+
+    # Clean up: remove lines where ALL template variables were empty
+    lines   = rendered.split("\n")
+    result  = []
+    prev_blank = False
+    for line in lines:
+        stripped  = line.strip()
+        # A line is considered empty if it has no word characters after
+        # stripping all non-alphanumeric chars (emoji, pipes, spaces etc.)
+        text_only = _re.sub(r'[^\w]', '', stripped)
+        is_blank  = not stripped
+
+        if is_blank:
+            if not prev_blank:
+                result.append("")
+            prev_blank = True
+        elif text_only:
+            result.append(line)
+            prev_blank = False
+        # else: line has only symbols/emoji but no text — skip it
+
+    return "\n".join(result).strip()
 
 
 # ─────────────────────────────────────────────────────────────
