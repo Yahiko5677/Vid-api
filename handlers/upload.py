@@ -238,7 +238,10 @@ async def on_video_upload(client: Client, message: Message):
     _pending_confirm[key] = data
     group_key      = (admin_id, title_key)
     already_asking = group_key in _waiting_for_title
-    _waiting_for_title.setdefault(group_key, []).append(key)
+    # Dedup: only add if not already in queue (prevents duplicate on retry)
+    queue = _waiting_for_title.setdefault(group_key, [])
+    if key not in queue:
+        queue.append(key)
 
     if not already_asking:
         # Only send confirm for FIRST file of this title+season
@@ -291,9 +294,10 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
         if qdata:
             await _store_file(client, chat_id, qdata, title, title_key)
 
+    s_label = "Movie" if data.get("is_movie") else "S" + str(data["season"]).zfill(2)
     await pacing.edit(cb.message,
-        f"✅ <b>{title} S{data['season']:02d}</b> — {len(queued_keys)} file(s) saved.\n"
-        f"Title remembered for this season."
+        "✅ <b>" + title + " " + s_label + "</b> — " + str(len(queued_keys)) + " file(s) saved.\n"
+        "Title remembered until next post."
     )
 
 
