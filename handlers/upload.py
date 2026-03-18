@@ -175,7 +175,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             for e in all_eps
         )
         if all_done and len(all_eps) > 1:
-            _record_saved(admin_id, f"{label} ✅ all ready — S{data['season']:02d} complete!")
+            _record_saved(admin_id, f"{label} ✅ all ready — S" + str(data["season"]).zfill(2) + " complete!")
             # Send force-post button immediately (outside debounce)
             try:
                 await pacing.send(client, chat_id,
@@ -298,9 +298,10 @@ async def cb_confirm_upload(client: Client, cb: CallbackQuery):
     group_key   = (admin_id, title_key)
     queued_keys = _waiting_for_title.pop(group_key, [key])
 
+    _slabel = "Movie" if data.get("is_movie") else "S" + str(data["season"]).zfill(2)
     await pacing.edit(cb.message,
-        f"✅ <b>Title confirmed:</b> <code>{title} S{data['season']:02d}</code>\n"
-        f"⏳ Saving {len(queued_keys)} file(s)..."
+        "✅ <b>Title confirmed:</b> <code>" + title + " " + _slabel + "</code>\n"
+        "⏳ Saving " + str(len(queued_keys)) + " file(s)..."
     )
     await cb.answer("Saving...")
 
