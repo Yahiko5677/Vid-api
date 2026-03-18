@@ -85,6 +85,19 @@ async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
     except Exception as e:
         logger.warning(f"Summary send failed: {e}")
 
+    # Always send force post button so admin can post with whatever qualities are ready
+    state     = _debounce.get(admin_id, {})
+    title_key = state.get("title_key")
+    season    = state.get("season", 1)
+    if title_key:
+        try:
+            await pacing.send(client, chat_id,
+                "📬 <b>Ready to post?</b> Use button below or /pending to review:",
+                reply_markup=force_post_keyboard(title_key, season),
+            )
+        except Exception as e:
+            logger.warning(f"Force post button failed: {e}")
+
     # Send sticker in admin PM as visual batch-complete indicator
     from database.db import settings_col
     s       = await settings_col.find_one({"admin_id": admin_id}) or {}
@@ -314,9 +327,13 @@ async def cb_edit_title(client: Client, cb: CallbackQuery):
     data["editing_title"] = True
     group_key    = (data["admin_id"], data["title_key"])
     queued_count = len(_waiting_for_title.get(group_key, [key]))
+    s_lbl     = "Movie" if data.get("is_movie") else "S" + str(data["season"]).zfill(2)
+    cur_title = data.get("raw_title", "")
     await pacing.edit(cb.message,
-        f"✏️ Send the <b>corrected title</b>\n"
-        f"Applies to all <b>{queued_count}</b> queued S{data['season']:02d} file(s):"
+        "✏️ <b>Edit Title</b>\n\n"
+        "Current: <code>" + cur_title + "</code>\n\n"
+        "Send the corrected title\n"
+        "Applies to all <b>" + str(queued_count) + "</b> queued " + s_lbl + " file(s):"
     )
     await cb.answer()
 
@@ -336,7 +353,15 @@ async def on_title_edit_reply(client: Client, message: Message):
     if not editing:
         return
 
-    new_title = message.text.strip()
+    raw_input = message.text.strip()
+    # If admin accidentally sent a filename (has video extension or quality tags),
+    # parse the title from it automatically
+    import re as _re
+    looks_like_filename = bool(_re.search(
+        r'\.(mkv|mp4|avi|mov)$|\b(480p|720p|1080p|2160p|HEVC|BluRay|WEB-DL)\b',
+        raw_input, _re.IGNORECASE
+    ))
+    new_title = parse_title(raw_input) if looks_like_filename else raw_input
 
     for key, data in editing:
         season        = data["season"]
