@@ -194,7 +194,7 @@ _thumb_state: dict[int, bool] = {}
 
 
 async def _build_preview_caption(session, settings):
-    from services.metadata import _render_caption
+    from services.post import _render_caption
     meta     = session.get("meta")
     episodes = session["episodes"]
     season   = session["season"]
