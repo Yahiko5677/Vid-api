@@ -26,33 +26,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 logger = logging.getLogger(__name__)
 
-_FONT_DIR  = "assets/fonts"
-_FONT_BOLD = os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")
-_FONT_REG  = os.path.join(_FONT_DIR, "DejaVuSans.ttf")
+# System font paths (installed via fonts-dejavu-core in Dockerfile)
+_FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_FONT_REG  = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 _SIZE      = (1280, 720)
 
-_FONT_URLS = {
-    _FONT_BOLD: "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf",
-    _FONT_REG:  "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf",
-}
 
 
-# ── Font auto-download ────────────────────────────────────────────────────────
-
-async def _ensure_fonts():
-    os.makedirs(_FONT_DIR, exist_ok=True)
-    for path, url in _FONT_URLS.items():
-        if not os.path.exists(path):
-            try:
-                logger.info(f"Downloading font: {os.path.basename(path)}")
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                        if r.status == 200:
-                            with open(path, "wb") as f:
-                                f.write(await r.read())
-                            logger.info(f"Font saved: {path}")
-            except Exception as e:
-                logger.warning(f"Font download failed ({path}): {e}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -334,7 +314,6 @@ async def build_thumbnail(
     meta:          dict = {},
     is_movie:      bool = False,
 ) -> Optional[bytes]:
-    await _ensure_fonts()
     poster   = (await _fetch(poster_url)) or Image.new("RGBA", (400, 600), (20,20,20,255))
     backdrop = await _fetch(backdrop_url) if backdrop_url else None
 
