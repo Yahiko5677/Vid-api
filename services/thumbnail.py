@@ -1,23 +1,18 @@
 """
-services/thumbnail.py — Cinematic 16:9 thumbnail generator (1280×720).
+thumbnail.py — Cinematic 16:9 thumbnail generator (1280×720).
 
 Layout:
-  Anime/TV:
-    • Blurred backdrop BG + left gradient
-    • Poster art right side
-    • Title + synopsis left
-    • Genre tags top
-    • Frosted glass EPISODE card bottom-right
-    • Watermark top-right
+  • Blurred/darkened backdrop as full background
+  • Left-to-right dark gradient for text legibility
+  • Poster art right side fading left
+  • Genre tags row top-left
+  • Large bold title + synopsis left side
+  • WATCH NOW button
+  • Frosted glass card bottom-right (movie: score+year, anime: ep+season)
+  • Watermark top-right
 
-  Movie:
-    • Same BG/gradient/poster
-    • Title + synopsis left
-    • Genre tags top
-    • Frosted glass INFO card bottom-right (rating + year, no episode/season)
-    • Watermark top-right
-
-Fonts auto-downloaded on first run to assets/fonts/.
+Fonts: assets/fonts/DejaVuSans-Bold.ttf + DejaVuSans.ttf
+       Auto-downloaded on first run.
 """
 
 import io
@@ -84,7 +79,8 @@ def _wrap(text: str, font, draw, max_w: int) -> list:
     words = text.split()
     lines, line = [], []
     for w in words:
-        if draw.textlength(" ".join(line + [w]), font=font) > max_w:
+        test = " ".join(line + [w])
+        if draw.textlength(test, font=font) > max_w:
             if line:
                 lines.append(" ".join(line))
             line = [w]
@@ -97,7 +93,7 @@ def _wrap(text: str, font, draw, max_w: int) -> list:
 
 # ── UI Components ─────────────────────────────────────────────────────────────
 
-def _draw_glass_rect(canvas, box, fill=(20, 24, 35, 180), outline=(255, 255, 255, 40), radius=15):
+def _draw_glass_rect(canvas, box, fill=(20,24,35,180), outline=(255,255,255,40), radius=15):
     x1, y1, x2, y2 = box
     region = canvas.crop((x1, y1, x2, y2))
     region = region.filter(ImageFilter.GaussianBlur(15))
@@ -105,19 +101,44 @@ def _draw_glass_rect(canvas, box, fill=(20, 24, 35, 180), outline=(255, 255, 255
     dm     = ImageDraw.Draw(mask)
     dm.rounded_rectangle([0, 0, x2-x1, y2-y1], radius=radius, fill=255)
     canvas.paste(region, (x1, y1), mask)
-    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    overlay = Image.new("RGBA", canvas.size, (0,0,0,0))
     od = ImageDraw.Draw(overlay)
     od.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=1)
     return Image.alpha_composite(canvas, overlay)
+
+
+def _draw_genre_tags(canvas: Image.Image, genres: list) -> Image.Image:
+    if not genres:
+        return canvas
+    W, H   = canvas.size
+    ov     = Image.new("RGBA", (W, H), (0,0,0,0))
+    od     = ImageDraw.Draw(ov)
+    font   = _font(30, bold=False)   # bigger font
+    x, y   = 60, 112
+    for i, g in enumerate(genres[:4]):
+        od.text((x, y), g, font=font, fill=(220, 220, 220, 230))
+        tw = int(od.textlength(g, font=font))
+        x += tw + 20
+        if i < len(genres[:4]) - 1:
+            # Dot vertically centered with 30px font (ascent ~22px)
+            dot_cx = x - 8
+            dot_cy = y + 14   # center of text height
+            dot_r  = 4
+            od.ellipse(
+                [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
+                fill=(210, 25, 25, 230)
+            )
+            x += 12
+    return Image.alpha_composite(canvas, ov)
 
 
 def _draw_watermark(canvas: Image.Image, text: str) -> Image.Image:
     if not text:
         return canvas
     W, H   = canvas.size
-    px, py = 12, 6
     margin = 32
-    font   = _font(18, bold=False)
+    px, py = 14, 8
+    font   = _font(20, bold=False)
     td     = ImageDraw.Draw(canvas)
     bbox   = td.textbbox((0, 0), text, font=font)
     tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
@@ -128,150 +149,150 @@ def _draw_watermark(canvas: Image.Image, text: str) -> Image.Image:
     return canvas
 
 
-def _draw_genre_tags(canvas: Image.Image, genres: list) -> Image.Image:
-    if not genres:
-        return canvas
-    W, H = canvas.size
-    ov   = Image.new("RGBA", (W, H), (0,0,0,0))
-    od   = ImageDraw.Draw(ov)
-    font = _font(20, bold=False)
-    x, y = 60, 120
-    for i, g in enumerate(genres[:4]):
-        od.text((x, y), g, font=font, fill=(200,200,200,200))
-        x += int(od.textlength(g, font=font)) + 15
-        if i < len(genres[:4])-1:
-            od.ellipse([x-10, y+10, x-6, y+14], fill=(210,25,25,200))
-            x += 15
-    return Image.alpha_composite(canvas, ov)
+# ── Base layer ────────────────────────────────────────────────────────────────
 
-
-def _draw_base(poster: Image.Image, backdrop: Optional[Image.Image]) -> tuple:
-    """Build background + gradient + poster art. Returns (canvas, draw)."""
+def _draw_base(poster: Image.Image, backdrop: Optional[Image.Image]) -> Image.Image:
     W, H   = _SIZE
-    canvas = Image.new("RGBA", (W, H), (10, 12, 18, 255))
+    canvas = Image.new("RGBA", (W, H), (10,12,18,255))
 
+    # Blurred dark background
     bg = (backdrop or poster).convert("RGBA").resize((W, H), Image.LANCZOS)
-    bg = bg.filter(ImageFilter.GaussianBlur(12))
-    bg = ImageEnhance.Brightness(bg).enhance(0.22)
+    bg = bg.filter(ImageFilter.GaussianBlur(14))
+    bg = ImageEnhance.Brightness(bg).enhance(0.20)
     canvas.paste(bg, (0, 0))
 
+    # Left-to-right gradient
     grad = Image.new("RGBA", (W, H), (0,0,0,0))
     gd   = ImageDraw.Draw(grad)
-    for i in range(W // 2):
-        alpha = int(220 * (1-(i/(W//2))**0.8))
-        gd.line([(i, 0), (i, H)], fill=(8,10,16,alpha))
+    for i in range(int(W * 0.65)):
+        alpha = int(230 * (1-(i/(W*0.65))**0.75))
+        gd.line([(i, 0), (i, H)], fill=(6, 8, 14, alpha))
     canvas = Image.alpha_composite(canvas, grad)
 
+    # Poster/character art — right side, slightly oversized and fading
     char   = poster.convert("RGBA")
-    char_h = int(H * 1.1)
+    char_h = int(H * 1.05)
     char_w = int(char_h * char.width / char.height)
     char   = char.resize((char_w, char_h), Image.LANCZOS)
-    canvas.paste(char, (W-char_w+60, -20), char)
+
+    # Create fade mask — fades from transparent on left to opaque on right
+    fade   = Image.new("L", (char_w, char_h), 0)
+    for x in range(char_w):
+        fade_alpha = int(255 * min(1.0, (x / (char_w * 0.35)) ** 1.2))
+        for y2 in range(char_h):
+            fade.putpixel((x, y2), fade_alpha)
+    char.putalpha(fade)
+    canvas.paste(char, (W-char_w+40, (H-char_h)//2), char)
 
     return canvas
 
 
+# ── Title + synopsis ──────────────────────────────────────────────────────────
+
 def _draw_title_synopsis(canvas, meta: dict) -> int:
-    """Draw title + synopsis. Returns y position after text."""
     draw   = ImageDraw.Draw(canvas)
     left_x = 60
+    max_w  = 600
     title  = meta.get("title", "UNKNOWN").upper()
 
-    def _get_font(text, max_w):
-        for s in [75, 60, 45]:
-            f     = _font(s, True)
-            lines = _wrap(text, f, draw, max_w)
-            if len(lines) <= 2:
-                return f, lines, int(s*1.1)
-        f = _font(35, True)
-        return f, _wrap(text, f, draw, max_w)[:3], 39
+    # Auto-size title to fit in 2 lines max
+    tf, tlines, th = None, None, None
+    for size in [80, 68, 55, 44, 36]:
+        f     = _font(size, True)
+        lines = _wrap(title, f, draw, max_w)
+        if len(lines) <= 2:
+            tf, tlines, th = f, lines, int(size * 1.15)
+            break
+    if tf is None:
+        tf = _font(36, True)
+        tlines = _wrap(title, tf, draw, max_w)[:3]
+        th = 42
 
-    tf, tlines, th = _get_font(title, 580)
-    curr_y = 175
+    curr_y = 165
     for ln in tlines:
-        draw.text((left_x+2, curr_y+2), ln, font=tf, fill=(0,0,0,100))
-        draw.text((left_x,   curr_y),   ln, font=tf, fill=(255,255,255,255))
+        # Shadow
+        draw.text((left_x+3, curr_y+3), ln, font=tf, fill=(0, 0, 0, 120))
+        draw.text((left_x,   curr_y),   ln, font=tf, fill=(255, 255, 255, 255))
         curr_y += th
 
-    synopsis = (meta.get("synopsis") or meta.get("overview",""))[:180]
+    # Synopsis — tighter line height, no gaps
+    synopsis = (meta.get("synopsis") or meta.get("overview", ""))[:200]
     if synopsis:
         if not synopsis.endswith("..."):
             synopsis += "..."
-        df = _font(22, False)
-        curr_y += 20
-        for ln in _wrap(synopsis, df, draw, 550)[:3]:
-            draw.text((left_x, curr_y), ln, font=df, fill=(200,200,210,230))
-            curr_y += 30
+        df      = _font(23, False)
+        line_h  = 32
+        curr_y += 18
+        for ln in _wrap(synopsis, df, draw, 560)[:3]:
+            draw.text((left_x, curr_y), ln, font=df, fill=(195, 200, 215, 225))
+            curr_y += line_h
 
     return curr_y
 
 
-# ── Card variants ─────────────────────────────────────────────────────────────
+# ── Info cards ────────────────────────────────────────────────────────────────
 
 def _episode_card(canvas, meta: dict) -> Image.Image:
-    """Frosted glass card for Anime/TV — shows episode + season."""
     W, H = _SIZE
-    card_w, card_h = 350, 130
-    cx = W - card_w - 32
-    cy = H - card_h - 32
+    card_w, card_h = 320, 120
+    cx = W - card_w - 30
+    cy = H - card_h - 30
     canvas = _draw_glass_rect(canvas, [cx, cy, cx+card_w, cy+card_h])
-    cd = ImageDraw.Draw(canvas)
+    cd     = ImageDraw.Draw(canvas)
 
-    ep     = str(meta.get("episode", "01"))  # "01" or "01-13" range
-    # Only zero-pad if it's a plain number, not a range
+    ep     = str(meta.get("episode", "01"))
     if "-" not in ep:
         ep = ep.zfill(2)
     season = str(meta.get("season", "1")).zfill(2)
-    ep_label = "EP " + ep
 
-    cd.text((cx+20, cy+20), ep_label,            font=_font(28, True),  fill=(255,255,255))
-    cd.text((cx+20, cy+65), f"Season {season}", font=_font(18, False), fill=(180,180,180))
+    cd.text((cx+20, cy+18), "EP " + ep,        font=_font(32, True),  fill=(255,255,255))
+    cd.text((cx+20, cy+62), "Season " + season, font=_font(20, False), fill=(170,170,180))
 
-    # Mini poster in card
     poster = meta.get("_poster_img")
     if poster:
-        mini_w = 100
-        mini   = poster.resize((mini_w, card_h-20), Image.LANCZOS)
-        canvas.paste(mini, (cx+card_w-mini_w-10, cy+10))
+        mini_w = 90
+        mini_h = card_h - 16
+        mini   = poster.resize((mini_w, mini_h), Image.LANCZOS)
+        canvas.paste(mini, (cx + card_w - mini_w - 8, cy + 8))
 
     return canvas
 
 
 def _movie_card(canvas, meta: dict) -> Image.Image:
-    """Frosted glass card for Movie — shows rating + year (no episode/season)."""
     W, H = _SIZE
-    card_w, card_h = 350, 110
-    cx = W - card_w - 32
-    cy = H - card_h - 32
+    card_w, card_h = 320, 120
+    cx = W - card_w - 30
+    cy = H - card_h - 30
     canvas = _draw_glass_rect(canvas, [cx, cy, cx+card_w, cy+card_h])
-    cd = ImageDraw.Draw(canvas)
+    cd     = ImageDraw.Draw(canvas)
 
-    score = str(meta.get("score") or "N/A")
+    score = str(meta.get("score") or "")
     year  = str(meta.get("year")  or "")
 
-    if score != "N/A":
-        cd.text((cx+20, cy+18), "⭐ " + score, font=_font(32, True),  fill=(255, 220, 50))
+    text_x = cx + 20
+    if score and score not in ("N/A", "None"):
+        cd.text((text_x, cy+16), "⭐ " + score, font=_font(36, True),  fill=(255, 215, 50, 255))
     if year:
-        cd.text((cx+20, cy+62), year,           font=_font(20, False), fill=(180, 180, 180))
+        cd.text((text_x, cy+64), year,           font=_font(24, False), fill=(180, 180, 185, 255))
 
-    # Mini poster in card
     poster = meta.get("_poster_img")
     if poster:
-        mini_w = 100
-        mini   = poster.resize((mini_w, card_h-20), Image.LANCZOS)
-        canvas.paste(mini, (cx+card_w-mini_w-10, cy+10))
+        mini_w = 90
+        mini_h = card_h - 16
+        mini   = poster.resize((mini_w, mini_h), Image.LANCZOS)
+        canvas.paste(mini, (cx + card_w - mini_w - 8, cy + 8))
 
     return canvas
 
 
-# ── Main build ────────────────────────────────────────────────────────────────
+# ── Main builder ──────────────────────────────────────────────────────────────
 
 def _build_card(
-    poster:       Image.Image,
-    backdrop:     Optional[Image.Image],
-    meta:         dict,
-    is_movie:     bool = False,
-    watermark:    str  = "",
+    poster:    Image.Image,
+    backdrop:  Optional[Image.Image],
+    meta:      dict,
+    is_movie:  bool = False,
+    watermark: str  = "",
 ) -> Image.Image:
     W, H   = _SIZE
     canvas = _draw_base(poster, backdrop)
@@ -280,21 +301,15 @@ def _build_card(
     # Title + synopsis
     curr_y = _draw_title_synopsis(canvas, meta)
 
-    # Watch Now button
-    curr_y += 40
-    btn_w, btn_h = 180, 52
-    draw.rounded_rectangle(
-        [60, curr_y, 60+btn_w, curr_y+btn_h],
-        radius=8, fill=(210, 25, 25, 255)
-    )
-    draw.text((60+42, curr_y+14), "WATCH NOW", font=_font(18), fill=(255,255,255))
+    # WATCH NOW button
+    curr_y += 36
+    bw, bh = 185, 52
+    draw.rounded_rectangle([60, curr_y, 60+bw, curr_y+bh], radius=10, fill=(210,25,25,255))
+    draw.text((60+35, curr_y+13), "WATCH NOW", font=_font(19, True), fill=(255,255,255))
 
     # Bottom-right info card
-    meta["_poster_img"] = poster  # pass for mini thumbnail in card
-    if is_movie:
-        canvas = _movie_card(canvas, meta)
-    else:
-        canvas = _episode_card(canvas, meta)
+    meta["_poster_img"] = poster
+    canvas = _movie_card(canvas, meta) if is_movie else _episode_card(canvas, meta)
 
     # Genre tags
     genres = meta.get("genres", [])
@@ -312,20 +327,14 @@ def _build_card(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def build_thumbnail(
-    poster_url:   str,
-    backdrop_url: str | None = None,
-    watermark:    str = "",
-    meta:         dict = {},
-    is_movie:     bool = False,
-) -> bytes | None:
-    """
-    Build cinematic 1280×720 thumbnail.
-    is_movie=True → shows rating/year card instead of episode/season card.
-    Returns JPEG bytes or None on failure.
-    """
+    poster_url:    str,
+    backdrop_url:  Optional[str] = None,
+    watermark:     str = "",
+    meta:          dict = {},
+    is_movie:      bool = False,
+) -> Optional[bytes]:
     await _ensure_fonts()
-
-    poster   = (await _fetch(poster_url)) or Image.new("RGBA", (400,600), (20,20,20,255))
+    poster   = (await _fetch(poster_url)) or Image.new("RGBA", (400, 600), (20,20,20,255))
     backdrop = await _fetch(backdrop_url) if backdrop_url else None
 
     try:
@@ -339,7 +348,7 @@ async def build_thumbnail(
 
 
 def process_thumbnail(image_bytes: bytes) -> bytes:
-    """Convert any uploaded image to 16:9 1280×720 JPEG."""
+    """Convert any image to 16:9 1280×720 JPEG (for custom thumbnails)."""
     try:
         img   = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         w, h  = img.size
