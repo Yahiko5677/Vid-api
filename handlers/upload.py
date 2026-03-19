@@ -175,23 +175,23 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
             for e in all_eps
         )
         if all_done and len(all_eps) > 1:
-            _record_saved(admin_id, f"{label} ✅ all ready — S" + str(data["season"]).zfill(2) + " complete!")
-            # Send force-post button immediately (outside debounce)
-            try:
-                await pacing.send(client, chat_id,
-                    f"🎉 <b>Season {data['season']:02d} complete!</b> <code>{title}</code>\n"
-                    f"{len(all_eps)} episodes ready to post:",
-                    reply_markup=force_post_keyboard(title_key, data["season"]),
-                )
-            except Exception:
-                pass
+
+            season_key = (admin_id, title_key, data["season"])
+            if season_key not in _season_complete_notified:
+                _season_complete_notified.add(season_key)
+                _record_saved(admin_id, f"{label} ✅ — S" + str(data["season"]).zfill(2) + " all ready!")
+                try:
+                    fkey = _uuid.uuid4().hex[:8]
+                    _cb_map[fkey] = (title_key, data["season"])
+                    await pacing.send(client, chat_id,
+                        "🎉 <b>Season " + str(data["season"]).zfill(2) + " complete!</b> <code>" + title + "</code>\n"
+                        + str(len(all_eps)) + " episodes ready to post:",
+                        reply_markup=force_post_keyboard(fkey),
+                    )
+                except Exception:
+                    pass
         else:
             _record_saved(admin_id, f"{label} ✅")
-
-    from database.db import settings_col
-    s      = await settings_col.find_one({"admin_id": admin_id}) or {}
-    log_ch = s.get("log_channel_id")
-    await log_file_confirmed(client, admin_id, title, data["quality"], ep_str, log_ch)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -269,17 +269,17 @@ async def on_video_upload(client: Client, message: Message):
 
     if not already_asking:
         # Only send confirm for FIRST file of this title+season
+        # Only send confirm for FIRST file of this title+season
+        _s = "Movie" if is_movie else "S" + str(season).zfill(2)
         await pacing.reply(message,
-            f"📁 <b>New title detected</b>\n\n"
-            f"📌 Title   : <code>{raw_title}</code>\n"
-            f"📺 Season  : <code>S{season:02d}</code>\n"
-            f"📺 Episode : <code>{ep_str}</code>\n"
-            f"🎞 Quality : <code>{quality}</code>\n\n"
-            f"Confirm title for all <b>S{season:02d}</b> files:",
+            "📁 <b>New title detected</b>\n\n"
+            "📌 Title   : <code>" + raw_title + "</code>\n"
+            "📺          : <code>" + _s + "</code>\n"
+            "🎞 Quality : <code>" + quality + "</code>\n\n"
+            "Confirm title for all <b>" + _s + "</b> files:",
             reply_markup=confirm_upload(raw_title, season, episode, quality, key),
             quote=True,
         )
-
     from database.db import settings_col
     s      = await settings_col.find_one({"admin_id": admin_id}) or {}
     log_ch = s.get("log_channel_id")
