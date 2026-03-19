@@ -84,19 +84,34 @@ def _render_caption(
     # Escape literal braces in values to prevent str.format() errors
     def _esc(s): return str(s).replace("{", "{{").replace("}", "}}")
 
-    rendered = template.format(
-        title    = _esc(title),
-        year     = _esc(year),
-        genres   = _esc(genres),
-        score    = _esc(score),
-        episodes = _esc(episodes),
-        studio   = _esc(studio),
-        synopsis = _esc(synopsis),
-        season   = "Season " + str(season),
-        ep_range = ep_range,
-        audio    = _esc(audio_info),
-        subs     = _esc(sub_info),
-    )
+    # Also escape braces in the template itself (e.g. custom templates from /settings)
+    safe_template = template.replace("{", "{{").replace("}", "}}")
+    # But restore our known valid placeholders
+    for var in ("title","year","genres","score","episodes","studio","synopsis",
+                "season","ep_range","audio","subs"):
+        safe_template = safe_template.replace("{{" + var + "}}", "{" + var + "}")
+
+    try:
+        rendered = safe_template.format(
+            title    = _esc(title),
+            year     = _esc(year),
+            genres   = _esc(genres),
+            score    = _esc(score),
+            episodes = _esc(episodes),
+            studio   = _esc(studio),
+            synopsis = _esc(synopsis),
+            season   = "Season " + str(season),
+            ep_range = ep_range,
+            audio    = _esc(audio_info),
+            subs     = _esc(sub_info),
+        )
+    except (KeyError, ValueError) as e:
+        # Fallback: unknown variable or stray brace in template
+        rendered = (
+            "<b>" + title + "</b>\n"
+            + ("Season " + str(season) + " • " + ep_range + "\n")
+            + ("🔊 " + audio_info + " | 📝 " + sub_info)
+        )
 
     # Clean up: remove lines where ALL template variables were empty
     lines   = rendered.split("\n")
