@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 helper_func.py
 
 encode / decode — 100% compatible with your existing File Store Bot.
