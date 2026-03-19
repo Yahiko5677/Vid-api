@@ -22,7 +22,7 @@ from pyrogram.enums import ParseMode
 logger = logging.getLogger(__name__)
 
 SEND_PAUSE = 3.0
-EDIT_PAUSE = 0.4
+EDIT_PAUSE = 1.0
 COPY_PAUSE = 3.0
 
 
@@ -94,14 +94,20 @@ async def edit(
     reply_markup=None,
     parse_mode=ParseMode.HTML,
 ):
-    return await _call(
-        lambda: message.edit_text(
-            text         = text,
-            reply_markup = reply_markup,
-            parse_mode   = parse_mode,
-        ),
-        EDIT_PAUSE,
-    )
+    try:
+        return await _call(
+            lambda: message.edit_text(
+                text         = text,
+                reply_markup = reply_markup,
+                parse_mode   = parse_mode,
+            ),
+            EDIT_PAUSE,
+        )
+    except Exception as e:
+        # Silently ignore MessageNotModified — content unchanged, not an error
+        if "MESSAGE_NOT_MODIFIED" in str(e):
+            return None
+        raise e
 
 
 async def edit_markup(
