@@ -34,7 +34,7 @@ _season_complete_notified: set = set()
 # { admin_id: {"task": asyncio.Task, "saved": [], "failed": []} }
 _debounce: dict[int, dict] = {}
 
-DEBOUNCE_SECONDS = 3.0   # wait this long after last file before sending summary
+DEBOUNCE_SECONDS = 1.0   # wait this long after last file before sending summary
 
 
 def _make_title_key(title: str, season: int) -> str:
