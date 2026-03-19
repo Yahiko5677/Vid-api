@@ -1,3 +1,4 @@
+# v5 - 2026-03-20
 import logging
 import uuid
 from pyrogram import Client, filters
@@ -300,7 +301,7 @@ async def cb_content_type(client: Client, cb: CallbackQuery):
     content_type = cb.data.split("_")[1]
     session["content_type"] = content_type
     title = session["episodes"][0]["title"]
-    await cb.answer()
+    await cb.answer()   # already early — keep here
     await pacing.edit(cb.message, "🔍 Searching metadata...")
     results = await search_all(title, content_type)
     if results:
@@ -333,7 +334,7 @@ async def cb_meta_pick(client: Client, cb: CallbackQuery):
     results = session.get("meta_results", [])
     if idx >= len(results):
         return await cb.answer("Invalid selection.", show_alert=True)
-    await cb.answer("Fetching details...")
+    await cb.answer("Fetching...")  # answer before slow fetch
     await pacing.edit(cb.message, "⏳ Fetching metadata details...")
     full = await get_full_meta(results[idx])
     session["meta"] = full
@@ -394,6 +395,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         "subs_override":     None,
     }
 
+    await cb.answer()  # answer immediately before any slow operations
     if settings.get("post_mode") == "rich":
         await pacing.edit(cb.message,
             "🎬 What type is <b>" + title + "</b>?",
@@ -402,7 +404,6 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         )
     else:
         await _show_preview(client, cb.message, admin_id, settings)
-    await cb.answer()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -608,6 +609,9 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
         settings["custom_thumb_bytes"] = session["custom_thumb_bytes"]
     settings["content_type"] = session.get("content_type", "anime")
 
+    # Answer immediately — Telegram expires callback queries after ~30s
+    # dispatch_post can take minutes for large seasons
+    await cb.answer()
     await pacing.edit(cb.message, "⏳ Posting...")
     await log_post_triggered(client, admin_id, title, season, len(episodes), ch_names, log_ch)
 
@@ -635,7 +639,6 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
         await log_post_failed(client, admin_id, title, str(e), log_ch)
 
     _post_session.pop(admin_id, None)
-    await cb.answer()
 
 
 # ─────────────────────────────────────────────────────────────
