@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 Unified metadata resolver.
 
 Routing by content type (selected by admin at post time):
