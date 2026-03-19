@@ -82,8 +82,10 @@ def parse_episode(filename: str):
 
     # ── 1. Series patterns (highest priority) ─────────────────
     series_patterns = [
+        (r'\[S(\d{1,2})-E(\d{1,3})\]',               2),  # [S07-E45]  ← first
+        (r'\[S(\d{1,2})E(\d{1,3})\]',                2),  # [S07E45]
         (r'[Ss](\d{1,2})[Ee](\d{1,3})',                2),  # S01E01
-        (r'[Ss](\d{1,2})\s+[Ee](\d{1,3})',             2),  # S02 E23
+        (r'[Ss](\d{1,2})\s+[Ee](\d{1,3})',            2),  # S02 E23
         (r'[Ss]eason\s*(\d{1,2}).*?[Ee]p?\s*(\d{1,3})', 2),  # Season 1 Ep 1
         (r'[Ee]pisode[\s.]*(\d{1,4})',                  1),  # Episode.320
         (r'[Ee]p[\s.]+(\d{1,3})',                       1),  # Ep 04
@@ -128,22 +130,22 @@ _JUNK_RE = re.compile(
 
 def parse_title(filename: str) -> str:
     """
-    Best-effort title extraction.
-    Handles both formats:
-      A) Title BEFORE episode:  Fairy.Tail.S02E07.480p.mkv
-      B) Title AFTER episode:   [@Chan] S02 E23 Fairy Tail 1080p.mkv
-      C) Movie:                 [@Chan] My Hero Academia Two Heroes (2018) 480p.mkv
+    Best-effort title extraction. Returns "" if no title can be determined.
+    Handles:
+      A) Fairy.Tail.S02E07.480p.mkv           → Fairy Tail
+      B) [@Chan] S02 E23 Fairy Tail 1080p.mkv → Fairy Tail
+      C) [@Chan] Movie Title (2025) 480p.mkv  → Movie Title
+      D) [S07-E45] [1080p] @Channel.mkv       → ""  (no title)
     """
-    # Remove extension
-    name = re.sub(r'\.\w{2,4}$', '', filename)
-    # Strip leading [tag] like [@Vertex_Anime]
-    name = re.sub(r'^\s*\[[^\]]*\]\s*', '', name).strip()
+    name = re.sub(r'\.\w{2,4}$', '', filename)          # remove extension
+    name = re.sub(r'^(\s*\[[^\]]*\]\s*)+', '', name).strip()  # strip ALL leading [tags]
+    name = re.sub(r'@\w+', '', name).strip()              # strip @handles
 
-    # Detect Format B: starts with SxxExx
+    # Detect Format B: starts with SxxExx — title is after
     if re.match(r'^[Ss]\d{1,2}[\s_]?[Ee]\d{1,3}', name):
         name = re.sub(r'^[Ss]\d{1,2}[\s_]?[Ee]\d{1,3}\s*', '', name)
     else:
-        # Format A/C: strip episode markers and everything after
+        # Format A/C: strip from episode marker onward
         name = re.sub(
             r'[Ss]\d{1,2}[\s_]?[Ee]\d{1,3}.*'
             r'|[Ss]eason\s*\d+.*'
@@ -151,23 +153,15 @@ def parse_title(filename: str) -> str:
             '', name, flags=re.IGNORECASE
         )
 
-    # Strip all remaining [..] and (..) blocks (quality tags, year, etc.)
+    # Strip remaining [..] (..) blocks, quality/junk tokens, decimal patterns
     name = re.sub(r'\[[^\]]*\]|\([^\)]*\)', '', name)
-
-    # Strip quality/technical junk words
     name = _JUNK_RE.sub('', name)
-
-    # Strip decimal patterns like "5.1" leftover from audio tags
     name = re.sub(r'\b\d+\.\d+\b', '', name)
-
-    # Clean separators
     name = re.sub(r'[\._\-]+', ' ', name).strip()
-    # Remove trailing year
     name = re.sub(r'\s*[\(\[]?\d{4}[\)\]]?\s*$', '', name).strip()
-    # Collapse multiple spaces
     name = re.sub(r'\s{2,}', ' ', name).strip()
 
-    return name.title() if name else filename
+    return name.title() if name else ""
 
 
 # ── Admin filter ─────────────────────────────────────────────────────────
