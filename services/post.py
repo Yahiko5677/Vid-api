@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 Post sender service.
 
 Simple Mode — forward files per episode in sequence + sticker between/end
