@@ -51,7 +51,7 @@ async def search_jikan(title: str) -> list[dict]:
 
 async def _search(title: str, media_type: str | None = None) -> list[dict]:
     url    = f"{BASE}/anime"
-    params = {"q": title, "limit": 8, "sfw": False}
+    params = {"q": title, "limit": 8, "sfw": "false"}
     if media_type:
         params["type"] = media_type
 
