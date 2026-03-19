@@ -81,22 +81,27 @@ def parse_episode(filename: str):
     name_lower = filename.lower()
 
     # ── 1. Series patterns (highest priority) ─────────────────
+    # ── 1. Series patterns (highest priority) ─────────────────
     series_patterns = [
-        (r'\[S(\d{1,2})-E(\d{1,3})\]',               2),  # [S07-E45]  ← first
-        (r'\[S(\d{1,2})E(\d{1,3})\]',                2),  # [S07E45]
-        (r'[Ss](\d{1,2})[Ee](\d{1,3})',                2),  # S01E01
-        (r'[Ss](\d{1,2})\s+[Ee](\d{1,3})',            2),  # S02 E23
+        (r'\[S(\d{1,2})-E(\d{1,3})\]',              2),  # [S07-E45]
+        (r'\[S(\d{1,2})\]\s*\[E(\d{1,3})\]',        2),  # [S07][E45]
+        (r'\[S(\d{1,2})\].*?\bE(\d{1,3})\b',        2),  # [S07] ... E45
+        (r'\[S(\d{1,2})E(\d{1,3})\]',               2),  # [S07E45]
+        (r'[Ss](\d{1,2})[Ee](\d{1,3})',             2),  # S01E01
+        (r'[Ss](\d{1,2})\s+[Ee](\d{1,3})',          2),  # S02 E23
         (r'[Ss]eason\s*(\d{1,2}).*?[Ee]p?\s*(\d{1,3})', 2),  # Season 1 Ep 1
-        (r'[Ee]pisode[\s.]*(\d{1,4})',                  1),  # Episode.320
-        (r'[Ee]p[\s.]+(\d{1,3})',                       1),  # Ep 04
+        (r'[Ee]pisode[\s.]*(\d{1,4})',               1),  # Episode.320
+        (r'[Ee]p[\s.]+(\d{1,3})',                    1),  # Ep 04
+        (r'\[S(\d{1,2})\]',                         3),  # [S07] alone
     ]
     for pat, groups in series_patterns:
         m = re.search(pat, filename, re.IGNORECASE)
         if m:
             if groups == 2:
                 return int(m.group(1)), int(m.group(2))
+            elif groups == 3:
+                return int(m.group(1)), 1
             return 1, int(m.group(1))
-
     # ── 2. Generic movie keywords ──────────────────────────────
     if any(kw in name_lower for kw in MOVIE_KEYWORDS):
         return 1, 0
