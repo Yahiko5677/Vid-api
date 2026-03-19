@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 thumbnail.py — Cinematic 16:9 thumbnail generator (1280×720).
 
 Layout:
