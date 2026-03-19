@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 memory_store.py — Primary in-memory store for pending files.
 
 Priority:  MEMORY FIRST  →  DB only as restart-recovery backup.
