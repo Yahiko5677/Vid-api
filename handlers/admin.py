@@ -206,7 +206,7 @@ async def _build_preview_caption(session, settings):
 
 async def _show_preview(client, message, admin_id: int, settings: dict):
     from services.tmdb import download_poster
-    from services.thumbnail import process_thumbnail, build_thumbnail
+    from services.thumbnail_v5 import process_thumbnail, build_thumbnail
     import io
     session     = _post_session.get(admin_id, {})
     meta        = session.get("meta")
