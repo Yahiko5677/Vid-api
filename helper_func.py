@@ -84,7 +84,7 @@ def parse_episode(filename: str):
     # ── 1. Series patterns (highest priority) ─────────────────
     # ── 1. Series patterns (highest priority) ─────────────────
     series_patterns = [
-        (r'\[S(\d{1,2})-E(\d{1,3})\]',              2),  # [S07-E45]
+        (r'\[S(\d{1,2})[\s-]E(\d{1,3})\]',         2),  # [S07-E45] or [S02 E09]
         (r'\[S(\d{1,2})\]\s*\[E(\d{1,3})\]',        2),  # [S07][E45]
         (r'\[S(\d{1,2})\].*?\bE(\d{1,3})\b',        2),  # [S07] ... E45
         (r'\[S(\d{1,2})E(\d{1,3})\]',               2),  # [S07E45]
