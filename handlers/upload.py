@@ -35,7 +35,7 @@ _season_complete_notified: set = set()
 # { admin_id: {"task": asyncio.Task, "saved": [], "failed": []} }
 _debounce: dict[int, dict] = {}
 
-DEBOUNCE_SECONDS = 1.0   # wait this long after last file before sending summary
+DEBOUNCE_SECONDS = 2.0   # wait this long after last file before sending summary
 
 
 def _make_title_key(title: str, season: int) -> str:
@@ -382,8 +382,8 @@ async def on_title_edit_reply(client: Client, message: Message):
         season_match = _re.search(r'\bS(\d{1,2})\b|\bSeason\s*(\d{1,2})\b', raw_input, _re.IGNORECASE)
         if season_match:
             new_season = int(season_match.group(1) or season_match.group(2))
-            # Remove season tag from title
-            new_title = _re.sub(r'\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b', '', raw_input, flags=_re.IGNORECASE).strip()
+            # Remove season + episode tags from title
+            new_title = _re.sub(r'\bS\d{1,2}\s*E\d{1,3}\b|\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b|\bE\d{1,3}\b', '', raw_input, flags=_re.IGNORECASE).strip()
         else:
             new_title  = raw_input
             new_season = None
