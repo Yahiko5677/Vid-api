@@ -367,17 +367,29 @@ async def on_title_edit_reply(client: Client, message: Message):
         return
 
     raw_input = message.text.strip()
-    # If admin accidentally sent a filename (has video extension or quality tags),
-    # parse the title from it automatically
     import re as _re
+
+    # If admin sent a filename, parse title from it
     looks_like_filename = bool(_re.search(
         r'\.(mkv|mp4|avi|mov)$|\b(480p|720p|1080p|2160p|HEVC|BluRay|WEB-DL)\b',
         raw_input, _re.IGNORECASE
     ))
-    new_title = parse_title(raw_input) if looks_like_filename else raw_input
+    if looks_like_filename:
+        new_title  = parse_title(raw_input)
+        new_season = None
+    else:
+        # Extract season if admin typed it — e.g. "My Hero Academia S02" or "Title Season 2"
+        season_match = _re.search(r'\bS(\d{1,2})\b|\bSeason\s*(\d{1,2})\b', raw_input, _re.IGNORECASE)
+        if season_match:
+            new_season = int(season_match.group(1) or season_match.group(2))
+            # Remove season tag from title
+            new_title = _re.sub(r'\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b', '', raw_input, flags=_re.IGNORECASE).strip()
+        else:
+            new_title  = raw_input
+            new_season = None
 
     for key, data in editing:
-        season        = data["season"]
+        season        = new_season if new_season is not None else data["season"]
         new_title_key = _make_title_key(new_title, season)
         old_group     = (admin_id, data["title_key"])
         new_group     = (admin_id, new_title_key)
@@ -388,8 +400,10 @@ async def on_title_edit_reply(client: Client, message: Message):
             if qkey in _pending_confirm:
                 _pending_confirm[qkey]["title_key"] = new_title_key
                 _pending_confirm[qkey]["raw_title"] = new_title
+                _pending_confirm[qkey]["season"]    = season
         data["raw_title"]     = new_title
         data["title_key"]     = new_title_key
+        data["season"]        = season
         data["editing_title"] = False
 
         s_lbl2 = "Movie" if data.get("is_movie") else "S" + str(season).zfill(2)
