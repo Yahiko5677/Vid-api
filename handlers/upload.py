@@ -35,12 +35,16 @@ _season_complete_notified: set = set()
 # { admin_id: {"task": asyncio.Task, "saved": [], "failed": []} }
 _debounce: dict[int, dict] = {}
 
-DEBOUNCE_SECONDS = 2.0   # wait this long after last file before sending summary
+DEBOUNCE_SECONDS = 3.0   # wait this long after last file before sending summary
 
 
 def _make_title_key(title: str, season: int) -> str:
-    """Season-aware key — S01 and S02 are separate groups."""
-    base = re.sub(r'\W+', '_', title.lower()).strip("_")
+    """Season-aware key — S01 and S02 are separate groups.
+    Normalizes title: strips leading articles (The/A/An) so
+    'The Rising of the Shield Hero' == 'Rising of the Shield Hero'.
+    """
+    normalized = re.sub(r'^(the|a|an)\s+', '', title.lower().strip())
+    base = re.sub(r'\W+', '_', normalized).strip("_")
     return f"{base}_s{season:02d}"
 
 
