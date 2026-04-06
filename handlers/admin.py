@@ -206,7 +206,7 @@ async def _build_preview_caption(session, settings):
 
 async def _show_preview(client, message, admin_id: int, settings: dict):
     from services.tmdb import download_poster
-    from services.thumbnail_v5 import process_thumbnail, build_thumbnail
+    from services.thumbnail import process_thumbnail, build_thumbnail
     import io
     session     = _post_session.get(admin_id, {})
     meta        = session.get("meta")
@@ -393,6 +393,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         "channels_selected": [],
         "audio_override":    None,
         "subs_override":     None,
+        "ep_offset":         0,
     }
 
     await cb.answer()  # answer immediately before any slow operations
@@ -504,6 +505,33 @@ async def cb_preview_edit_caption(client: Client, cb: CallbackQuery):
     await cb.answer()
 
 
+@Client.on_callback_query(filters.regex("^preview_ep_offset$") & filters.user(ADMINS))
+async def cb_preview_ep_offset(client: Client, cb: CallbackQuery):
+    admin_id = cb.from_user.id
+    if admin_id not in _post_session:
+        return await cb.answer("Session expired.", show_alert=True)
+    cur = _post_session[admin_id].get("ep_offset", 0)
+    _post_session[admin_id]["editing"] = "ep_offset"
+    _post_session[admin_id]["editing"] = "ep_offset"
+    cur = _post_session[admin_id].get("ep_offset", 0)
+    txt = ("\U0001f522 <b>Episode Offset</b>\n\nCurrent: <code>" + str(cur) + "</code>\n\n"
+           "Example: Fairy Tail Hindi S07E01 = original EP176 → offset=175\n\n"
+           "Send the offset number (0 to reset):")
+    await pacing.edit(cb.message, txt, reply_markup=close_button())
+    await cb.answer()
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ─────────────────────────────────────────────────────────────
 #  Audio/Subs edit
 # ─────────────────────────────────────────────────────────────
@@ -534,6 +562,18 @@ async def on_inline_edit_text(client: Client, message: Message):
     if not editing:
         return
     settings = await get_settings(admin_id)
+    if editing == "ep_offset":
+        try:
+            offset = int(message.text.strip())
+        except ValueError:
+            await pacing.reply(message, "❌ Send a number e.g. <code>175</code>", parse_mode=ParseMode.HTML)
+            return
+        session["ep_offset"] = offset
+        session.pop("editing", None)
+        await pacing.reply(message, "✅ Offset set to <code>" + str(offset) + "</code>", parse_mode=ParseMode.HTML)
+        await _show_preview(client, message, admin_id, settings)
+        return
+
     if editing == "caption_preview":
         session["caption_override"] = message.text.strip()
         session.pop("editing", None)
@@ -608,6 +648,7 @@ async def cb_do_post(client: Client, cb: CallbackQuery):
     if session.get("custom_thumb_bytes"):
         settings["custom_thumb_bytes"] = session["custom_thumb_bytes"]
     settings["content_type"] = session.get("content_type", "anime")
+    settings["ep_offset"]    = session.get("ep_offset", 0)
 
     # Answer immediately — Telegram expires callback queries after ~30s
     # dispatch_post can take minutes for large seasons
