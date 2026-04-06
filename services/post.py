@@ -18,7 +18,7 @@ from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helper_func import encode
 from services.tmdb import download_poster
-from services.thumbnail_v5 import process_thumbnail, build_thumbnail
+from services.thumbnail import process_thumbnail, build_thumbnail
 from utils import pacing
 from config import DEFAULT_CAPTION_TEMPLATE, DEFAULT_BUTTON_LABEL, DEFAULT_BUTTON_LAYOUT
 
@@ -391,6 +391,31 @@ async def post_rich_mode(
 # ─────────────────────────────────────────────────────────────
 #  DISPATCHER
 # ─────────────────────────────────────────────────────────────
+
+async def _fetch_episode_titles(episodes: list, meta: dict | None) -> list:
+    # Enrich episodes with ep_title from TMDB/Jikan if meta available
+    if not meta:
+        return episodes
+    tmdb_id = meta.get("tmdb_id")
+    mal_id  = meta.get("mal_id")
+    season  = episodes[0]["season"] if episodes else 1
+    ep_titles: dict = {}
+    try:
+        if tmdb_id:
+            from services.tmdb import get_episode_titles
+            ep_titles = await get_episode_titles(tmdb_id, season)
+        elif mal_id:
+            from services.jikan import get_episode_titles as jikan_ep_titles
+            ep_titles = await jikan_ep_titles(mal_id)
+    except Exception as e:
+        logger.warning("Episode title fetch failed: " + str(e))
+    result = []
+    for ep in episodes:
+        ep = dict(ep)
+        ep["ep_title"] = ep_titles.get(ep["episode"], "")
+        result.append(ep)
+    return result
+
 
 async def dispatch_post(
     client: Client,
