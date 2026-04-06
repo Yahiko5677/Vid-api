@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 TMDB service — fetch movie/series metadata.
 Returns: title, year, genres, overview, poster_url
 """
@@ -99,3 +100,19 @@ async def download_poster(url: str) -> bytes | None:
         except Exception as e:
             logger.warning(f"Poster download error: {e}")
     return None
+
+
+async def get_episode_titles(tmdb_id: int, season: int) -> dict:
+    # Returns {ep_number: "Episode Title"} dict
+    if not TMDB_API_KEY:
+        return {}
+    url = f"{BASE}/tv/{tmdb_id}/season/{season}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, params={"api_key": TMDB_API_KEY}, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    return {ep["episode_number"]: ep.get("name","") for ep in data.get("episodes",[])}
+    except Exception as e:
+        logger.warning("TMDB episode titles error: " + str(e))
+    return {}
