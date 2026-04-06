@@ -186,10 +186,13 @@ def post_preview_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🖼 Change Thumbnail", callback_data="preview_change_thumb"),
-            InlineKeyboardButton("✅ Post Now",         callback_data="preview_post"),
+            InlineKeyboardButton("✅ Post Now",          callback_data="preview_post"),
         ],
         [
             InlineKeyboardButton("📝 Edit Caption",     callback_data="preview_edit_caption"),
+            InlineKeyboardButton("🔢 EP Offset",        callback_data="preview_ep_offset"),
+        ],
+        [
             InlineKeyboardButton("❌ Cancel",            callback_data="cancel_post"),
         ],
     ])
