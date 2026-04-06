@@ -1,4 +1,5 @@
 """
+# v5 - 2026-03-20
 Jikan v4 service — MyAnimeList metadata (no API key required).
 
 Endpoint: https://api.jikan.moe/v4
@@ -130,3 +131,28 @@ def _parse_item(item: dict) -> dict:
         "studio":      ", ".join(studios[:2]) if studios else "N/A",
         "poster_url":  poster,
     }
+
+
+async def get_episode_titles(mal_id: int) -> dict:
+    # Returns {ep_number: "Episode Title"} dict from Jikan
+    url = f"https://api.jikan.moe/v4/anime/{mal_id}/episodes"
+    result = {}
+    try:
+        async with aiohttp.ClientSession() as s:
+            page = 1
+            while True:
+                async with s.get(url, params={"page": page}, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        break
+                    data = await r.json()
+                    for ep in data.get("data", []):
+                        num   = ep.get("mal_id")
+                        title = ep.get("title") or ep.get("title_romanji") or ""
+                        if num and title:
+                            result[num] = title
+                    if not data.get("pagination", {}).get("has_next_page"):
+                        break
+                    page += 1
+    except Exception as e:
+        logger.warning("Jikan episode titles error: " + str(e))
+    return result
