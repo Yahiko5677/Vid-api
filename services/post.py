@@ -18,7 +18,7 @@ from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helper_func import encode
 from services.tmdb import download_poster
-from services.thumbnail import process_thumbnail, build_thumbnail
+from services.thumbnail_v5 import process_thumbnail, build_thumbnail
 from utils import pacing
 from config import DEFAULT_CAPTION_TEMPLATE, DEFAULT_BUTTON_LABEL, DEFAULT_BUTTON_LAYOUT
 
