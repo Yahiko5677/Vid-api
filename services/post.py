@@ -54,41 +54,68 @@ async def _get_batch_link(start_id: int, end_id: int, bot_name: str, ch_id: int)
 
 async def _fetch_episode_titles(episodes: list, meta: dict | None, ep_offset: int = 0) -> list:
     """
-    Enrich each episode dict with ep_title.
-    ep_offset: if S07E01 = real episode 176, set ep_offset=175
-    TMDB: fetches by season number
-    Jikan: fetches all episodes (offset applied for lookup)
+    Enrich each episode dict with English ep_title.
+    If meta is None (e.g. Simple Mode), auto-search series title to fetch English episode titles.
+    Cascade order: AniList (GraphQL English) → TMDB (en-US) → Jikan v4
     """
-    if not meta:
+    if not episodes:
         return episodes
 
-    tmdb_id = meta.get("tmdb_id")
-    mal_id  = meta.get("mal_id")
-    season  = episodes[0]["season"] if episodes else 1
+    season       = episodes[0].get("season", 1)
+    series_title = episodes[0].get("title", "")
     ep_titles: dict[int, str] = {}
 
+    m = meta or {}
+    tmdb_id = m.get("tmdb_id")
+    mal_id  = m.get("mal_id")
+
     try:
+        # 1. TMDB (if tmdb_id pre-selected)
         if tmdb_id:
             from services.tmdb import get_episode_titles
-            # For dubbed seasons use season number directly
             ep_titles = await get_episode_titles(tmdb_id, season)
-            # If empty (dubbed split season), try season 1 with offset
             if not ep_titles and ep_offset == 0:
                 ep_titles = await get_episode_titles(tmdb_id, 1)
+
+        # 2. AniList GraphQL (English titles)
+        if not ep_titles and series_title:
+            from services.anilist import get_anilist_episode_titles
+            ep_titles = await get_anilist_episode_titles(series_title)
+
+        # 3. Jikan MAL (if mal_id pre-selected)
         if not ep_titles and mal_id:
             from services.jikan import get_episode_titles as jikan_ep_titles
             ep_titles = await jikan_ep_titles(mal_id)
+
+        # 4. TMDB auto-search fallback
+        if not ep_titles and series_title:
+            from services.tmdb import search_tmdb, get_episode_titles
+            search_res = await search_tmdb(series_title)
+            if search_res:
+                found_id = search_res[0].get("tmdb_id")
+                if found_id:
+                    ep_titles = await get_episode_titles(found_id, season)
+
+        # 5. Jikan auto-search fallback
+        if not ep_titles and series_title:
+            from services.jikan import search_jikan, get_episode_titles as jikan_ep_titles
+            jikan_res = await search_jikan(series_title)
+            if jikan_res:
+                found_mal = jikan_res[0].get("mal_id")
+                if found_mal:
+                    ep_titles = await jikan_ep_titles(found_mal)
+
     except Exception as e:
-        logger.warning("Episode title fetch failed: " + str(e))
+        logger.warning("Episode title fetch error: " + str(e))
 
     result = []
     for ep in episodes:
         ep = dict(ep)
         ep_num = ep["episode"]
-        # Real episode number for lookup = local ep + offset
         real_ep = ep_num + ep_offset
-        ep["ep_title"]  = ep_titles.get(real_ep) or ep_titles.get(ep_num) or ""
-        ep["real_ep"]   = real_ep
+        found_title = ep_titles.get(real_ep) or ep_titles.get(ep_num) or ""
+        ep["ep_title"] = found_title
+        ep["real_ep"]  = real_ep
         result.append(ep)
     return result
 
