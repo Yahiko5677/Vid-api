@@ -311,8 +311,11 @@ async def post_rich_mode(
     )
 
     if not quality_links:
-        logger.warning("No quality links built — check File Store Bot settings")
-        return
+        raise RuntimeError(
+            "❌ No File Store Bot links generated.\n\n"
+            "Rich mode requires at least one File Store Bot configured.\n"
+            "Go to /settings → 🤖 File Store Bots and set a bot + DB channel for each quality."
+        )
 
     caption = settings.get("caption_override") or _render_caption(
         template, meta, ep_range, season, audio, subs

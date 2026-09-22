@@ -41,6 +41,19 @@ def _now() -> datetime:
 # Shared short-key → (title_key, season) map for callback data (64-byte limit)
 _cb_map: dict[str, tuple] = {}
 
+_CB_MAP_MAX = 500   # prune when map exceeds this size (Render memory guard)
+
+
+def prune_cb_map():
+    """Evict the oldest half of _cb_map entries when over the cap.
+    Called every time a new key is inserted — O(n) but rare and fast for n≤500.
+    """
+    if len(_cb_map) >= _CB_MAP_MAX:
+        to_remove = list(_cb_map.keys())[:len(_cb_map) // 2]
+        for k in to_remove:
+            _cb_map.pop(k, None)
+        logger.debug(f"_cb_map pruned: removed {len(to_remove)} old entries")
+
 
 # ═══════════════════════════════════════════════════════
 #  WRITE

@@ -37,7 +37,6 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"📝 {subs}",        callback_data="set_subs"),
         ],
         [InlineKeyboardButton(f"🎴 Sticker ({sticker})", callback_data="set_sticker")],
-    [InlineKeyboardButton(f"💧 Watermark",             callback_data="set_watermark")],
         [InlineKeyboardButton("🤖 File Store Bots",   callback_data="set_quality_bots")],
         [InlineKeyboardButton(f"📢 Channels ({ch_count})", callback_data="set_channels")],
         [InlineKeyboardButton("❌ Close",             callback_data="close_settings")],
@@ -57,7 +56,7 @@ def quality_bots_menu(quality_bots: dict) -> InlineKeyboardMarkup:
             f"{'✅' if qb else '❌'} {q} → @{bot}" if qb else f"❌ {q} → Not set",
             callback_data=f"set_qbot_{q}"
         )])
-    rows.append([InlineKeyboardButton("🔙 Back", callback_data="back_settings")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -73,13 +72,13 @@ def channel_manager(channels: list[dict]) -> InlineKeyboardMarkup:
             f"{'✅' if q in quals else '❌'}{q}" for q in ["480p","720p","1080p"]
         )
         rows.append([
-            InlineKeyboardButton(f"📢 {ch['name']}", callback_data=f"ch_info_{ch['id']}"),
-            InlineKeyboardButton("⚙️ Qualities",     callback_data=f"ch_quals_{ch['id']}"),
-            InlineKeyboardButton("🗑",               callback_data=f"remove_ch_{ch['id']}"),
+            InlineKeyboardButton(f"📢 {ch['name']}", callback_data=f"ch_qual_{ch['id']}"),
+            InlineKeyboardButton("⚙️ Qualities",     callback_data=f"ch_qual_{ch['id']}"),
+            InlineKeyboardButton("🗑",               callback_data=f"del_ch_{ch['id']}"),
         ])
-        rows.append([InlineKeyboardButton(q_icons,   callback_data=f"ch_info_{ch['id']}")])
+        rows.append([InlineKeyboardButton(q_icons,   callback_data=f"ch_qual_{ch['id']}")])
     rows.append([InlineKeyboardButton("➕ Add Channel", callback_data="add_channel")])
-    rows.append([InlineKeyboardButton("🔙 Back",        callback_data="back_settings")])
+    rows.append([InlineKeyboardButton("🔙 Back",        callback_data="back_to_settings")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -93,10 +92,10 @@ def channel_quality_picker(channel_id: int, channel_name: str, selected: list[st
         icon = "✅" if q in selected else "☑️"
         rows.append([InlineKeyboardButton(
             f"{icon} {q}",
-            callback_data=f"cqtoggle_{channel_id}_{q}"
+            callback_data=f"tq_{q}_{channel_id}"
         )])
     rows.append([
-        InlineKeyboardButton("✅ Save",  callback_data=f"cqsave_{channel_id}"),
+        InlineKeyboardButton("✅ Save",  callback_data=f"done_ch_qual_{channel_id}"),
         InlineKeyboardButton("🔙 Back",  callback_data="set_channels"),
     ])
     return InlineKeyboardMarkup(rows)

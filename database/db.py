@@ -147,6 +147,9 @@ async def set_quality_bot(admin_id: int, quality: str, bot_username: str, channe
         upsert=True,
     )
 
+# Alias — settings.py calls this name
+update_quality_bot = set_quality_bot
+
 
 # ═══════════════════════════════════════════════════════
 #  STATS

@@ -1,6 +1,7 @@
 # v5 - 2026-03-20
 import logging
 import uuid
+from datetime import datetime, timezone, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
@@ -9,7 +10,7 @@ from config import ADMINS
 from utils import pacing
 from memory_store import (
     get_all_pending, get_season_episodes, remove_episode,
-    count_pending, clear_all_pending, clear_pending_season, _cb_map
+    count_pending, clear_all_pending, clear_pending_season, _cb_map, prune_cb_map
 )
 from database.db import get_settings, mark_posted, pending_col
 from keyboards import (
@@ -27,6 +28,23 @@ logger        = logging.getLogger(__name__)
 _admin_filter = filters.private & filters.user(ADMINS)
 _post_session: dict[int, dict] = {}
 _thumb_state:  dict[int, bool] = {}
+
+_SESSION_TTL = timedelta(hours=3)   # evict sessions older than this on Render
+
+
+def _evict_stale_sessions():
+    """Remove _post_session entries older than _SESSION_TTL.
+    Called at the start of every force-post trigger to stay memory-clean.
+    """
+    now   = datetime.now(timezone.utc)
+    stale = [
+        aid for aid, s in _post_session.items()
+        if now - s.get("created_at", now) > _SESSION_TTL
+    ]
+    for aid in stale:
+        _post_session.pop(aid, None)
+        logger.debug(f"Evicted stale post session for admin {aid}")
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -383,6 +401,10 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
     title    = episodes[0]["title"]
     settings = await get_settings(admin_id)
 
+    # Housekeeping: evict stale sessions + prune _cb_map before creating new session
+    _evict_stale_sessions()
+    prune_cb_map()
+
     _post_session[admin_id] = {
         "title_key":         title_key,
         "season":            season,
@@ -394,6 +416,7 @@ async def cb_force_post(client: Client, cb: CallbackQuery):
         "audio_override":    None,
         "subs_override":     None,
         "ep_offset":         0,
+        "created_at":        datetime.now(timezone.utc),  # TTL tracking
     }
 
     await cb.answer()  # answer immediately before any slow operations
@@ -510,8 +533,6 @@ async def cb_preview_ep_offset(client: Client, cb: CallbackQuery):
     admin_id = cb.from_user.id
     if admin_id not in _post_session:
         return await cb.answer("Session expired.", show_alert=True)
-    cur = _post_session[admin_id].get("ep_offset", 0)
-    _post_session[admin_id]["editing"] = "ep_offset"
     _post_session[admin_id]["editing"] = "ep_offset"
     cur = _post_session[admin_id].get("ep_offset", 0)
     txt = ("\U0001f522 <b>Episode Offset</b>\n\nCurrent: <code>" + str(cur) + "</code>\n\n"

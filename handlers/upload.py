@@ -10,7 +10,7 @@ from pyrogram.types import Message, CallbackQuery
 from config import ADMINS
 from helper_func import parse_quality, parse_episode, parse_title
 import uuid as _uuid
-from memory_store import save_file, _cb_map
+from memory_store import save_file, _cb_map, prune_cb_map
 from keyboards import confirm_upload, force_post_keyboard, quality_picker
 from services.log import log_file_received, log_file_confirmed
 from utils import pacing
@@ -97,6 +97,7 @@ async def _send_batch_summary(client: Client, admin_id: int, chat_id: int):
     season    = state.get("season", 1)
     if title_key:
         try:
+            prune_cb_map()
             _fkey = _uuid.uuid4().hex[:8]
             _cb_map[_fkey] = (title_key, season)
             await pacing.send(client, chat_id,
@@ -186,6 +187,7 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
                 _season_complete_notified.add(season_key)
                 _record_saved(admin_id, f"{label} ✅ — S" + str(data["season"]).zfill(2) + " all ready!")
                 try:
+                    prune_cb_map()
                     fkey = _uuid.uuid4().hex[:8]
                     _cb_map[fkey] = (title_key, data["season"])
                     await pacing.send(client, chat_id,
