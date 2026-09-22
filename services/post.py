@@ -204,7 +204,7 @@ async def post_simple_mode(
                 logger.warning(f"No source chat for {quality} ep{episode}")
                 continue
             try:
-                await pacing.copy_message(
+                await pacing.raw_copy_message(
                     client,
                     chat_id              = channel_id,
                     from_chat_id         = from_chat,
@@ -248,7 +248,7 @@ async def _build_quality_batch_links(
             if not from_chat:
                 continue
             try:
-                stored = await pacing.copy_message(
+                stored = await pacing.raw_copy_message(
                     client,
                     chat_id              = db_ch,
                     from_chat_id         = from_chat,

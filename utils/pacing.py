@@ -158,7 +158,7 @@ async def copy_message(
     message_id: int,
     disable_notification: bool = True,
 ):
-    """copy_message with FloodWait retry + 0.1s pacing."""
+    """copy_message with FloodWait retry + pacing."""
     return await _call(
         lambda: client.copy_message(
             chat_id              = chat_id,
@@ -168,3 +168,29 @@ async def copy_message(
         ),
         COPY_PAUSE,
     )
+
+
+async def raw_copy_message(
+    client: Client,
+    chat_id: int,
+    from_chat_id: int,
+    message_id: int,
+    disable_notification: bool = True,
+):
+    """
+    Server-side raw forward using forward_messages(..., drop_author=True).
+    Guarantees 100% identical video cover, duration, thumbnail, resolution & HD preview.
+    """
+    async def _forward():
+        res = await client.forward_messages(
+            chat_id              = chat_id,
+            from_chat_id         = from_chat_id,
+            message_ids          = message_id,
+            drop_author          = True,
+            disable_notification = disable_notification,
+        )
+        if isinstance(res, list):
+            return res[0]
+        return res
+
+    return await _call(_forward, COPY_PAUSE)
