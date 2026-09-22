@@ -77,10 +77,10 @@ async def _fetch_episode_titles(episodes: list, meta: dict | None, ep_offset: in
             if not ep_titles and ep_offset == 0:
                 ep_titles = await get_episode_titles(tmdb_id, 1)
 
-        # 2. AniList GraphQL (English titles)
+        # 2. AniList GraphQL (English titles with season awareness)
         if not ep_titles and series_title:
             from services.anilist import get_anilist_episode_titles
-            ep_titles = await get_anilist_episode_titles(series_title)
+            ep_titles = await get_anilist_episode_titles(series_title, season)
 
         # 3. Jikan MAL (if mal_id pre-selected)
         if not ep_titles and mal_id:

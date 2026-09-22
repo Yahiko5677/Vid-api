@@ -15,58 +15,70 @@ logger = logging.getLogger(__name__)
 
 ANILIST_URL = "https://graphql.anilist.co"
 
-QUERY = """
-query ($search: String) {
-  Media (search: $search, type: ANIME) {
-    id
-    title {
-      romaji
-      english
-    }
-    streamingEpisodes {
-      title
-    }
-  }
-}
-"""
-
-
-async def get_anilist_episode_titles(title: str) -> dict[int, str]:
+async def get_anilist_episode_titles(title: str, season: int = 1) -> dict[int, str]:
     """
-    Search AniList by title and return a dict of {ep_number: "English Episode Title"}.
-    Only extracts valid English episode names.
+    Search AniList by title + season and return a dict of {local_ep_number: "English Episode Title"}.
+    Handles global continuous episode numbering (e.g. Season 3 starting at Ep 49).
     """
     if not title:
         return {}
 
-    variables = {"search": title}
-    result: dict[int, str] = {}
+    search_term = f"{title} Season {season}" if season > 1 else title
+    variables = {"search": search_term}
+    raw_titles: dict[float, str] = {}
+
+    query = """
+    query ($search: String) {
+      Page (page: 1, perPage: 10) {
+        media (search: $search, type: ANIME) {
+          id
+          title { romaji english }
+          episodes
+          streamingEpisodes {
+            title
+          }
+        }
+      }
+    }
+    """
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.post(ANILIST_URL, json={"query": QUERY, "variables": variables}) as resp:
+            async with session.post(ANILIST_URL, json={"query": query, "variables": variables}) as resp:
                 if resp.status != 200:
                     logger.warning(f"AniList GraphQL HTTP {resp.status}")
                     return {}
                 data = await resp.json()
-                media = data.get("data", {}).get("Media")
-                if not media:
-                    return {}
+                media_list = data.get("data", {}).get("Page", {}).get("media", [])
+                
+                for media in media_list:
+                    for ep in media.get("streamingEpisodes", []):
+                        raw_title = ep.get("title", "")
+                        if not raw_title:
+                            continue
+                        match = re.search(r'(?:Episode\s*)?(\d+(?:\.\d+)?)[\s:-]+(.+)', raw_title, re.IGNORECASE)
+                        if match:
+                            ep_num = float(match.group(1))
+                            ep_name = match.group(2).strip()
+                            if ep_name and not re.match(r'^Episode\s*\d+$', ep_name, re.IGNORECASE):
+                                raw_titles[ep_num] = ep_name
 
-                episodes = media.get("streamingEpisodes", [])
-                for ep in episodes:
-                    raw_title = ep.get("title", "")
-                    if not raw_title:
-                        continue
-                    # Match "Episode 1 - Title" or "1 - Title" or "Episode 1: Title"
-                    match = re.search(r'(?:Episode\s*)?(\d+)[\s:-]+(.+)', raw_title, re.IGNORECASE)
-                    if match:
-                        ep_num = int(match.group(1))
-                        ep_name = match.group(2).strip()
-                        # Ensure name is not redundant "Episode X"
-                        if ep_name and not re.match(r'^Episode\s*\d+$', ep_name, re.IGNORECASE):
-                            result[ep_num] = ep_name
     except Exception as e:
         logger.warning(f"AniList episode titles error: {e}")
 
-    return result
+    if not raw_titles:
+        return {}
+
+    # Sort integer episode numbers to determine global starting episode
+    sorted_nums = sorted([n for n in raw_titles.keys() if n.is_integer()])
+    min_global_ep = int(sorted_nums[0]) if sorted_nums else 1
+
+    # Build local episode map (1..100) -> English title
+    mapped_titles: dict[int, str] = {}
+    for local_ep in range(1, 100):
+        global_ep = min_global_ep + local_ep - 1
+        found = raw_titles.get(local_ep) or raw_titles.get(global_ep) or raw_titles.get(float(global_ep))
+        if found:
+            mapped_titles[local_ep] = found
+
+    return mapped_titles

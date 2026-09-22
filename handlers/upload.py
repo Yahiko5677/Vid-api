@@ -140,6 +140,30 @@ def _record_failed(admin_id: int, label: str):
     _debounce[admin_id]["failed"].append(label)
 
 
+async def _preload_season_titles(admin_id: int, title_key: str, season: int, title: str):
+    """
+    Background pre-fetch task triggered on file upload.
+    Pre-fetches English episode titles from AniList/TMDB so they are ready in memory before post time.
+    """
+    try:
+        from memory_store import get_season_episodes
+        eps = get_season_episodes(admin_id, title_key, season)
+        if not eps:
+            return
+        from services.post import _fetch_episode_titles
+        enriched = await _fetch_episode_titles(eps, meta=None)
+        # Store fetched ep_title into episode dicts in memory
+        for ep in enriched:
+            ep_title = ep.get("ep_title")
+            if ep_title:
+                local_eps = get_season_episodes(admin_id, title_key, season)
+                for le in local_eps:
+                    if le.get("episode") == ep.get("episode"):
+                        le["ep_title"] = ep_title
+    except Exception as e:
+        logger.debug(f"Background title pre-fetch error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 #  Store file — copy to quality's DB channel, save to memory
 # ─────────────────────────────────────────────────────────────
@@ -167,6 +191,12 @@ async def _store_file(client: Client, chat_id: int, data: dict, title: str, titl
         file_name = data["file_name"],
         from_chat_id = data["from_chat_id"], # admin PM chat — needed at post time
     )
+
+    # Fire background pre-fetch for English episode titles
+    try:
+        asyncio.create_task(_preload_season_titles(admin_id, title_key, data["season"], title))
+    except Exception:
+        pass
 
     have    = list(ep["qualities"].keys())
     missing = [q for q in ["480p", "720p", "1080p"] if q not in have]
