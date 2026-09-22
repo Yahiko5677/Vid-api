@@ -18,7 +18,7 @@ ANILIST_URL = "https://graphql.anilist.co"
 async def get_anilist_episode_titles(title: str, season: int = 1) -> dict[int, str]:
     """
     Search AniList by title + season and return a dict of {local_ep_number: "English Episode Title"}.
-    Handles global continuous episode numbering (e.g. Season 3 starting at Ep 49).
+    Strictly filters out non-TV formats and trailers/promos to prevent season mismatches.
     """
     if not title:
         return {}
@@ -32,6 +32,7 @@ async def get_anilist_episode_titles(title: str, season: int = 1) -> dict[int, s
       Page (page: 1, perPage: 10) {
         media (search: $search, type: ANIME) {
           id
+          format
           title { romaji english }
           episodes
           streamingEpisodes {
@@ -52,10 +53,19 @@ async def get_anilist_episode_titles(title: str, season: int = 1) -> dict[int, s
                 media_list = data.get("data", {}).get("Page", {}).get("media", [])
                 
                 for media in media_list:
+                    fmt = (media.get("format") or "").upper()
+                    # Skip movies/OVAs/specials for season series queries
+                    if season >= 1 and fmt in ("MOVIE", "OVA", "SPECIAL", "MUSIC"):
+                        continue
+
                     for ep in media.get("streamingEpisodes", []):
                         raw_title = ep.get("title", "")
                         if not raw_title:
                             continue
+                        # Ignore trailers, teasers, promotional videos
+                        if re.search(r'\b(Trailer|Teaser|PV|CM|Preview)\b', raw_title, re.IGNORECASE):
+                            continue
+
                         match = re.search(r'(?:Episode\s*)?(\d+(?:\.\d+)?)[\s:-]+(.+)', raw_title, re.IGNORECASE)
                         if match:
                             ep_num = float(match.group(1))
